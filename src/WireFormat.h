@@ -160,7 +160,7 @@ enum ControlOp {
 struct ClientLease {
     uint64_t leaseId;           /// A cluster unique id for a specific lease.
                                 /// 0 is used to indicate invalid or expired id.
-    uint64_t leaseTerm;         /// Cluster time after which the lease may have
+    uint64_t leaseExpiration;   /// Cluster time after which the lease may have
                                 /// become invalid.
     uint64_t timestamp;         /// Cluster time when this lease information was
                                 /// provided by the coordinator.
@@ -518,7 +518,7 @@ struct CreateIndex {
     struct Request {
         RequestCommon common;
         uint64_t tableId;       // Id of table to which the index belongs.
-        uint8_t indexType;      // Type of index.
+        uint8_t indexType;      // Type of secondary keys in the index.
         uint8_t indexId;        // Id of secondary keys in the index.
         uint8_t numIndexlets;   // Number of indexlets to partition the index
                                 // key space.
@@ -1683,7 +1683,9 @@ struct TxDecision {
     static const Opcode opcode = Opcode::TX_DECISION;
     static const ServiceType service = MASTER_SERVICE;
 
-    enum Decision { COMMIT, ABORT, INVALID };
+    enum Decision { COMMIT,         // Indicate that transaction should commit.
+                    ABORT,          // Indicate that transaction should abort.
+                    UNDECIDED };    // Intermediate state; should never be sent.
 
     struct Request {
         RequestCommon common;
@@ -1708,7 +1710,7 @@ struct TxPrepare {
     /// Note: Make sure INVALID is always last.
     enum OpType { READ, REMOVE, WRITE, INVALID };
 
-    enum Vote { COMMIT, ABORT };
+    enum Vote { PREPARED, ABORT, COMMITTED };
 
     struct Request {
         RequestCommon common;

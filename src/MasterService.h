@@ -27,6 +27,7 @@
 #include "ObjectFinder.h"
 #include "ObjectManager.h"
 #include "ReplicaManager.h"
+#include "RpcResult.h"
 #include "SegmentIterator.h"
 #include "SegmentManager.h"
 #include "ServerConfig.h"
@@ -267,7 +268,7 @@ class MasterService : public Service {
                 WireFormat::RemoveIndexEntry::Response* respHdr,
                 Rpc* rpc);
     void requestInsertIndexEntries(Object& object);
-    void requestRemoveIndexEntries(Buffer& objectBuffer);
+    void requestRemoveIndexEntries(Object& object);
     void splitAndMigrateIndexlet(
                 const WireFormat::SplitAndMigrateIndexlet::Request* reqHdr,
                 WireFormat::SplitAndMigrateIndexlet::Response* respHdr,
@@ -322,7 +323,7 @@ class MasterService : public Service {
         Buffer resultBuffer;
         Log::Reference resultRef((uint64_t)result);
         objectManager.getLog()->getEntry(resultRef, resultBuffer);
-        RpcRecord savedRec(resultBuffer);
+        RpcResult savedRec(resultBuffer);
         return *((typename LinearizableRpcType::Response*) savedRec.getResp());
     }
 
@@ -337,7 +338,7 @@ class MasterService : public Service {
         Buffer resultBuffer;
         Log::Reference resultRef(result);
         objectManager.getLog()->getEntry(resultRef, resultBuffer);
-        RpcRecord savedRec(resultBuffer);
+        RpcResult savedRec(resultBuffer);
         return *((WireFormat::TxPrepare::Vote*) savedRec.getResp());
     }
 

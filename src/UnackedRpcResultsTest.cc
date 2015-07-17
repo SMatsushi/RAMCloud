@@ -157,6 +157,10 @@ TEST_F(UnackedRpcResultsTest, recordCompletion) {
     results.checkDuplicate(1, 16, 5, 1, &result);
     results.recordCompletion(1, 16, reinterpret_cast<void*>(1016));
 
+    //Ignore if acked and ignoreIfAck flag is set.
+    results.recordCompletion(1, 4, reinterpret_cast<void*>(1012), true);
+    results.recordCompletion(10, 1, reinterpret_cast<void*>(1012), true);
+
     EXPECT_EQ(16UL, results.clients[1]->maxRpcId);
     //TODO(seojin): modify test after fixing RAM-716.
     EXPECT_EQ(50, results.clients[1]->len);
@@ -219,7 +223,8 @@ TEST_F(UnackedRpcResultsTest, recoverRecord) {
     // Duplicate record.
 //    TestLog::reset();
     results.recoverRecord(leaseId, 15, 5, &result);
-    EXPECT_EQ("recoverRecord: Duplicate RpcRecord found during recovery.",
+    EXPECT_EQ("recoverRecord: Duplicate RpcResult found during recovery. "
+              "<clientID, rpcID, ackId> = <10, 15, 5>",
             TestLog::get());
 }
 
@@ -257,7 +262,7 @@ TEST_F(UnackedRpcResultsTest, cleanByTimeout) {
     EXPECT_EQ(1U, service->clusterTime.load());
 
     //TODO(seojin): test with mock coordinator which returns
-    //              valid lease and we just update leaseTerm.
+    //              valid lease and we just update leaseExpiration.
 }
 
 //TODO(seojin): tests for API functions.

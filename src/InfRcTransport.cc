@@ -92,6 +92,7 @@
 #include "ServiceManager.h"
 #include "ShortMacros.h"
 #include "PerfCounter.h"
+#include "PerfStats.h"
 #include "TimeTrace.h"
 #include "Util.h"
 
@@ -148,7 +149,6 @@ InfRcTransport::InfRcTransport(Context* context,
     , logMemoryBase(0)
     , logMemoryBytes(0)
     , logMemoryRegion(0)
-    , transmitCycleCounter()
     , serverRpcPool()
     , clientRpcPool()
     , deadQueuePairs()
@@ -869,10 +869,6 @@ InfRcTransport::reapTxBuffers()
 
     // Has TX just transitioned to idle?
     if (n > 0 && freeTxBuffers.size() == MAX_TX_QUEUE_DEPTH) {
-        metrics->transport.infiniband.transmitActiveTicks +=
-            transmitCycleCounter->stop();
-        transmitCycleCounter.destroy();
-
         // It's now safe to delete queue pairs (see comment by declaration
         // for deadQueuePairs).
         while (!deadQueuePairs.empty()) {
@@ -1015,9 +1011,7 @@ InfRcTransport::sendZeroCopy(uint64_t nonce, Buffer* message, QueuePair* qp)
 
     metrics->transport.transmit.iovecCount += sgesUsed;
     metrics->transport.transmit.byteCount += message->size();
-    if (!transmitCycleCounter) {
-        transmitCycleCounter.construct();
-    }
+    PerfStats::threadStats.networkOutputBytes += message->size();
     CycleCounter<RawMetric> _(&metrics->transport.transmit.ticks);
     ibv_send_wr* badTxWorkRequest;
     if (expect_true(!testingDontReallySend)) {
@@ -1105,9 +1099,6 @@ InfRcTransport::ServerRpc::sendReply()
                     t->getMaxRpcSize()));
     }
 
-    if (!t->transmitCycleCounter) {
-        t->transmitCycleCounter.construct();
-    }
     t->sendZeroCopy(nonce, &replyPayload, qp);
     interval.stop();
 
@@ -1211,8 +1202,8 @@ InfRcTransport::ClientRpc::sendOrQueue()
  * checks for incoming RPC requests and responses and processes them.
  *
  * \return
- *      True if we were able to do anything useful, false if there was
- *      no meaningful data.
+ *      Nonzero if we were able to do anything useful, zero if there was
+ *      no work to be done.
  */
 int
 InfRcTransport::Poller::poll()
@@ -1234,6 +1225,7 @@ InfRcTransport::Poller::poll()
                         reinterpret_cast<BufferDescriptor *>(response->wr_id);
             if (response->byte_len < 1000)
                 prefetch(bd->buffer, response->byte_len);
+            PerfStats::threadStats.networkInputBytes += response->byte_len;
             if (response->status != IBV_WC_SUCCESS) {
                 LOG(ERROR, "wc.status(%d:%s) != IBV_WC_SUCCESS",
                     response->status,
@@ -1299,6 +1291,15 @@ InfRcTransport::Poller::poll()
         CycleCounter<RawMetric> receiveTicks;
         int numRequests = t->infiniband->pollCompletionQueue(t->serverRxCq,
                 MAX_COMPLETIONS, wc);
+        if ((t->numFreeServerSrqBuffers - numRequests) == 0) {
+            // The receive buffer queue has run completely dry. This is bad
+            // for performance: if any requests arrive while the queue is empty,
+            // Infiniband imposes a long wait period (milliseconds?) before
+            // the caller retries.
+            RAMCLOUD_CLOG(WARNING, "Infiniband receive buffers ran out "
+                    "(%d new requests arrived); could cause significant "
+                    "delays", numRequests);
+        }
         for (int i = 0; i < numRequests; i++) {
             foundWork = 1;
             ibv_wc* request = &wc[i];
@@ -1309,6 +1310,7 @@ InfRcTransport::Poller::poll()
                 reinterpret_cast<BufferDescriptor*>(request->wr_id);
             if (request->byte_len < 1000)
                 prefetch(bd->buffer, request->byte_len);
+            PerfStats::threadStats.networkInputBytes += request->byte_len;
 
             if (t->serverPortMap.find(request->qp_num)
                     == t->serverPortMap.end()) {
@@ -1330,11 +1332,16 @@ InfRcTransport::Poller::poll()
             ServerRpc *r = t->serverRpcPool.construct(t, qp, header.nonce);
 
             uint32_t len = request->byte_len - sizeof32(header);
-            if (t->numFreeServerSrqBuffers < 2) {
-                // Running low on buffers; copy the data so we can return
-                // the buffer immediately.
-                LOG(NOTICE, "Receive buffers running low; copying %u-byte "
-                    "request", len);
+            // It's very important that we don't let the receive buffer
+            // queue get completely empty (if this happens, Infiniband
+            // won't retry until after a long delay), so when the queue
+            // starts running low we copy incoming packets in order to
+            // return the buffers immediately. The constant below was
+            // originally 2, but that turned out not to be sufficient.
+            // Measurements of the YCSB benchmarks in 7/2015 suggest that
+            // a value of 4 is (barely) okay, but we now use 8 to provide a
+            // larger margin of safety, even if a burst of packets arrives.
+            if (t->numFreeServerSrqBuffers < 8) {
                 r->requestPayload.appendCopy(bd->buffer + sizeof(header), len);
                 t->postSrqReceiveAndKickTransmit(t->serverSrq, bd);
             } else {
@@ -1365,7 +1372,9 @@ InfRcTransport::Poller::poll()
     // sent. It's done here in the hopes that it will happen when we
     // have nothing else to do, so it's effectively free.  It's much
     // more efficient if we can reclaim several buffers at once, so wait
-    // until buffers are running low before trying to reclaim.
+    // until buffers are running low before trying to reclaim.  This
+    // optimization improves the throughput of "clusterperf readThroughput"
+    // by about 5% (as of 7/2015).
     if (t->freeTxBuffers.size() < 3) {
         t->reapTxBuffers();
         if (t->freeTxBuffers.size() >= 3) {

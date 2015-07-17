@@ -342,6 +342,13 @@ MasterService::dropIndexletOwnership(
     const void* firstNotOwnedKey = rpc->requestPayload->getRange(
             reqOffset, reqHdr->firstNotOwnedKeyLength);
 
+    if ((firstKey == NULL && reqHdr->firstKeyLength > 0) ||
+            (firstNotOwnedKey == NULL && reqHdr->firstNotOwnedKeyLength > 0)) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
+
     indexletManager.deleteIndexlet(
             reqHdr->tableId, reqHdr->indexId,
             firstKey, reqHdr->firstKeyLength,
@@ -737,6 +744,13 @@ MasterService::insertIndexEntry(
     uint32_t reqOffset = sizeof32(*reqHdr);
     const void* indexKeyStr =
             rpc->requestPayload->getRange(reqOffset, reqHdr->indexKeyLength);
+
+    if (indexKeyStr == NULL) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
+
     respHdr->common.status = indexletManager.insertEntry(
             reqHdr->tableId, reqHdr->indexId,
             indexKeyStr, reqHdr->indexKeyLength, reqHdr->primaryKeyHash);
@@ -1191,9 +1205,16 @@ MasterService::multiRead(const WireFormat::MultiOp::Request* reqHdr,
                 rpc->requestPayload->getOffset<
                 WireFormat::MultiOp::Request::ReadPart>(reqOffset);
         reqOffset += sizeof32(WireFormat::MultiOp::Request::ReadPart);
+
         const void* stringKey = rpc->requestPayload->getRange(
                 reqOffset, currentReq->keyLength);
         reqOffset += currentReq->keyLength;
+
+        if (stringKey == NULL) {
+            respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+            break;
+        }
+
         Key key(currentReq->tableId, stringKey, currentReq->keyLength);
 
         WireFormat::MultiOp::Response::ReadPart* currentResp =
@@ -1292,7 +1313,8 @@ MasterService::multiRemove(const WireFormat::MultiOp::Request* reqHdr,
     // Delete old index entries if any.
     for (uint32_t i = 0; i < numRequests; i++) {
         if (objectBuffers[i].size() > 0) {
-            requestRemoveIndexEntries(objectBuffers[i]);
+            Object oldObject(objectBuffers[i]);
+            requestRemoveIndexEntries(oldObject);
         }
     }
 }
@@ -1382,7 +1404,8 @@ MasterService::multiWrite(const WireFormat::MultiOp::Request* reqHdr,
     // So, delete old index entries if any.
     for (uint32_t i = 0; i < numRequests; i++) {
         if (oldObjectBuffers[i].size() > 0) {
-            requestRemoveIndexEntries(oldObjectBuffers[i]);
+            Object oldObject(oldObjectBuffers[i]);
+            requestRemoveIndexEntries(oldObject);
         }
     }
 }
@@ -1408,6 +1431,11 @@ MasterService::prepForIndexletMigration(
     reqOffset += reqHdr->firstKeyLength;
     void* firstNotOwnedKey = rpc->requestPayload->getRange(
             reqOffset, reqHdr->firstNotOwnedKeyLength);
+
+    if ((firstKey == NULL && reqHdr->firstKeyLength > 0) ||
+            (firstNotOwnedKey == NULL && reqHdr->firstNotOwnedKeyLength > 0)) {
+        throw FatalError(HERE, "Ill-formed RPC in prepForIndexletMigration.");
+    }
 
     // Try to add the indexlet.
     bool added = indexletManager.addIndexlet(
@@ -1507,6 +1535,13 @@ MasterService::read(const WireFormat::Read::Request* reqHdr,
     uint32_t reqOffset = sizeof32(*reqHdr);
     const void* stringKey = rpc->requestPayload->getRange(
             reqOffset, reqHdr->keyLength);
+
+    if (stringKey == NULL) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
+
     Key key(reqHdr->tableId, stringKey, reqHdr->keyLength);
 
     RejectRules rejectRules = reqHdr->rejectRules;
@@ -1547,6 +1582,13 @@ MasterService::readKeysAndValue(
     uint32_t reqOffset = sizeof32(*reqHdr);
     const void* stringKey = rpc->requestPayload->getRange(
             reqOffset, reqHdr->keyLength);
+
+    if (stringKey == NULL) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
+
     Key key(reqHdr->tableId, stringKey, reqHdr->keyLength);
 
     RejectRules rejectRules = reqHdr->rejectRules;
@@ -1574,6 +1616,7 @@ MasterService::receiveMigrationData(
         WireFormat::ReceiveMigrationData::Response* respHdr,
         Rpc* rpc)
 {
+    // TODO(ankitak)
     uint64_t tableId = reqHdr->tableId;
     uint64_t firstKeyHash = reqHdr->firstKeyHash;
     uint32_t segmentBytes = reqHdr->segmentBytes;
@@ -1648,6 +1691,13 @@ MasterService::remove(const WireFormat::Remove::Request* reqHdr,
 {
     const void* stringKey = rpc->requestPayload->getRange(
             sizeof32(*reqHdr), reqHdr->keyLength);
+
+    if (stringKey == NULL) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
+
     Key key(reqHdr->tableId, stringKey, reqHdr->keyLength);
 
     // Buffer for object being removed, so we can remove corresponding
@@ -1669,7 +1719,8 @@ MasterService::remove(const WireFormat::Remove::Request* reqHdr,
 
     // Remove index entries corresponding to old object, if any.
     if (oldBuffer.size() > 0) {
-        requestRemoveIndexEntries(oldBuffer);
+        Object oldObject(oldBuffer);
+        requestRemoveIndexEntries(oldObject);
     }
 }
 
@@ -1690,6 +1741,13 @@ MasterService::removeIndexEntry(
     uint32_t reqOffset = sizeof32(*reqHdr);
     const void* indexKeyStr =
             rpc->requestPayload->getRange(reqOffset, reqHdr->indexKeyLength);
+
+    if (indexKeyStr == NULL) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
+
     respHdr->common.status = indexletManager.removeEntry(
             reqHdr->tableId, reqHdr->indexId,
             indexKeyStr, reqHdr->indexKeyLength, reqHdr->primaryKeyHash);
@@ -1747,15 +1805,13 @@ MasterService::requestInsertIndexEntries(Object& object)
  * Helper function used by remove methods in this class to send requests
  * for removing index entries (corresponding to the object being removed)
  * to the index servers.
- * \param objectBuffer
- *      Pointer to the buffer in log for the object for which
- *      index entries are to be deleted.
+ * \param object
+ *      Information about the object for which index entries are to be
+ *      deleted.
  */
 void
-MasterService::requestRemoveIndexEntries(Buffer& objectBuffer)
+MasterService::requestRemoveIndexEntries(Object& object)
 {
-    Object object(objectBuffer);
-
     KeyCount keyCount = object.getKeyCount();
     if (keyCount <= 1)
         return;
@@ -1977,6 +2033,10 @@ MasterService::splitAndMigrateIndexlet(
     void* splitKey = rpc->requestPayload->getRange(
             sizeof32(*reqHdr), splitKeyLength);
 
+    if (splitKey == NULL) {
+        throw FatalError(HERE, "Ill-formed RPC in splitAndMigrateIndexlet.");
+    }
+
     // Find the indexlet we're trying to split / migrate to ensure we own it.
     bool foundIndexlet = indexletManager.hasIndexlet(
             tableId, indexId, splitKey, splitKeyLength);
@@ -2188,6 +2248,8 @@ MasterService::takeTabletOwnership(
                     "tableId %lu: overlaps with one or more different ranges.",
                     reqHdr->firstKeyHash, reqHdr->lastKeyHash, reqHdr->tableId);
 
+            // This error is uncaught in the caller function at the coordinator.
+            // It will cause the coordinator to crash as something is wrong.
             respHdr->common.status = STATUS_INTERNAL_ERROR;
         }
     }
@@ -2215,6 +2277,15 @@ MasterService::takeIndexletOwnership(
     reqOffset+=reqHdr->firstKeyLength;
     const void* firstNotOwnedKey = rpc->requestPayload->getRange(
             reqOffset, reqHdr->firstNotOwnedKeyLength);
+
+    if ((firstKey == NULL && reqHdr->firstKeyLength > 0) ||
+            (firstNotOwnedKey == NULL && reqHdr->firstNotOwnedKeyLength > 0)) {
+        // This error is uncaught in the caller function at the coordinator.
+        // It will cause the coordinator to crash as something is wrong.
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
 
     indexletManager.addIndexlet(
             reqHdr->tableId, reqHdr->indexId, reqHdr->backingTableId,
@@ -2251,6 +2322,12 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
     WireFormat::TxParticipant *participants =
         (WireFormat::TxParticipant*)rpc->requestPayload->getRange(reqOffset,
                 sizeof32(WireFormat::TxParticipant) * participantCount);
+
+    if (participants == NULL) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
 
     if (reqHdr->decision == WireFormat::TxDecision::COMMIT) {
         for (uint32_t i = 0; i < participantCount; ++i) {
@@ -2322,6 +2399,11 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
     } else {
         respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
         rpc->sendReply();
+
+        // Sync before reply is not required for consistency. We do sync to
+        // reduce latency of subsequent requests.
+        objectManager.syncChanges();
+        return;
     }
 
     objectManager.syncChanges();
@@ -2383,6 +2465,12 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
 
     reqOffset += sizeof32(WireFormat::TxParticipant) * participantCount;
 
+    if (participants == NULL) {
+        respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+        rpc->sendReply();
+        return;
+    }
+
     // 2. Process operations.
     uint32_t numRequests = reqHdr->opCount;
 
@@ -2400,7 +2488,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
         RejectRules rejectRules;
 
         respHdr->common.status = STATUS_OK;
-        respHdr->vote = WireFormat::TxPrepare::COMMIT;
+        respHdr->vote = WireFormat::TxPrepare::PREPARED;
 
         Buffer buffer;
         const WireFormat::TxPrepare::OpType *type =
@@ -2496,11 +2584,11 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
                                 reqHdr->lease.leaseId,
                                 rpcId,
                                 reqHdr->ackId,
-                                reqHdr->lease.leaseTerm);
+                                reqHdr->lease.leaseExpiration);
         UnackedRpcHandle* rh = &rpcHandles.back();
         if (rh->isDuplicate()) {
             respHdr->vote = parsePrepRpcResult(rh->resultLoc());
-            if (respHdr->vote == WireFormat::TxPrepare::COMMIT) {
+            if (respHdr->vote == WireFormat::TxPrepare::PREPARED) {
                 continue;
             } else if (respHdr->vote == WireFormat::TxPrepare::ABORT) {
                 break;
@@ -2509,12 +2597,12 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
             }
         }
 
-        uint64_t rpcRecordPtr;
+        uint64_t rpcResultPtr;
         KeyLength pKeyLen;
         const void* pKey = op->object.getKey(0, &pKeyLen);
         respHdr->common.status = STATUS_OK;
-        WireFormat::TxPrepare::Vote vote = WireFormat::TxPrepare::COMMIT;
-        RpcRecord rpcRecord(
+        WireFormat::TxPrepare::Vote vote = WireFormat::TxPrepare::PREPARED;
+        RpcResult rpcResult(
                 tableId,
                 Key::getHash(tableId, pKey, pKeyLen),
                 reqHdr->lease.leaseId, rpcId, reqHdr->ackId,
@@ -2525,7 +2613,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
         try {
             respHdr->common.status = objectManager.prepareOp(
                     *op, &rejectRules, &newOpPtr, &isCommitVote,
-                    &rpcRecord, &rpcRecordPtr);
+                    &rpcResult, &rpcResultPtr);
         } catch (RetryException& e) {
             objectManager.syncChanges();
             throw;
@@ -2533,13 +2621,58 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
 
         if (!isCommitVote || respHdr->common.status != STATUS_OK) {
             respHdr->vote = WireFormat::TxPrepare::ABORT;
-            rh->recordCompletion(rpcRecordPtr);
+            rh->recordCompletion(rpcResultPtr);
             break;
         }
 
         preparedOps.bufferOp(reqHdr->lease.leaseId, rpcId, newOpPtr);
 
-        rh->recordCompletion(rpcRecordPtr);
+        rh->recordCompletion(rpcResultPtr);
+    }
+
+    // when it is a single server transaction, we commit the transaction
+    // preemptively, so that a client doesn't need to send decision RPC.
+    if (numRequests == participantCount &&
+            respHdr->common.status == STATUS_OK &&
+            respHdr->vote == WireFormat::TxPrepare::PREPARED) {
+        for (uint32_t i = 0; i < participantCount; ++i) {
+            uint64_t opPtr = preparedOps.peekOp(reqHdr->lease.leaseId,
+                                                   participants[i].rpcId);
+
+            // Skip if object is not prepared since it is already committed.
+            if (!opPtr) {
+                continue;
+            }
+
+            Buffer opBuffer;
+            Log::Reference opRef(opPtr);
+            objectManager.getLog()->getEntry(opRef, opBuffer);
+            PreparedOp op(opBuffer, 0, opBuffer.size());
+
+            Status status;
+
+            if (op.header.type == WireFormat::TxPrepare::READ) {
+                status = objectManager.commitRead(op, opRef);
+            } else if (op.header.type == WireFormat::TxPrepare::REMOVE) {
+                status = objectManager.commitRemove(op, opRef);
+            } else if (op.header.type == WireFormat::TxPrepare::WRITE) {
+                status = objectManager.commitWrite(op, opRef);
+            }
+
+            // When an error happens in preemptive commit, we just respond
+            // with the regular response (vote == PREPARED) to the prepare RPC.
+            // Possible causes are tablet migration and slow log cleaner.
+            // All of them can be resolved by retry of txDecision.
+            if (status != STATUS_OK) {
+                objectManager.syncChanges();
+                rpc->sendReply();
+                return;
+            }
+
+            preparedOps.popOp(reqHdr->lease.leaseId,
+                                 participants[i].rpcId);
+        }
+        respHdr->vote = WireFormat::TxPrepare::COMMITTED;
     }
 
     // By design, our response will be shorter than the request. This ensures
@@ -2573,7 +2706,7 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
         if (unackedRpcResults.checkDuplicate(reqHdr->lease.leaseId,
                                              reqHdr->rpcId,
                                              reqHdr->ackId,
-                                             reqHdr->lease.leaseTerm,
+                                             reqHdr->lease.leaseExpiration,
                                              &result)) {
             *respHdr = parseRpcResult<WireFormat::Write>(result);
             rpc->sendReply();
@@ -2599,19 +2732,19 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
     // Write the object.
     RejectRules rejectRules = reqHdr->rejectRules;
 
-    uint64_t rpcRecordPtr;
+    uint64_t rpcResultPtr;
     if (linearizable) {
         KeyLength pKeyLen;
         const void* pKey = object.getKey(0, &pKeyLen);
         respHdr->common.status = STATUS_OK;
-        RpcRecord rpcRecord(
+        RpcResult rpcResult(
                 reqHdr->tableId, Key::getHash(reqHdr->tableId, pKey, pKeyLen),
                 reqHdr->lease.leaseId, reqHdr->rpcId, reqHdr->ackId,
                 respHdr, sizeof(*respHdr));
 
         respHdr->common.status = objectManager.writeObject(
                 object, &rejectRules, &respHdr->version, &oldObjectBuffer,
-                &rpcRecord, &rpcRecordPtr);
+                &rpcResult, &rpcResultPtr);
     } else {
         respHdr->common.status = objectManager.writeObject(
                 object, &rejectRules, &respHdr->version, &oldObjectBuffer);
@@ -2623,17 +2756,17 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
     if (linearizable) {
         unackedRpcResults.recordCompletion(reqHdr->lease.leaseId,
                                     reqHdr->rpcId,
-                                    reinterpret_cast<void*>(rpcRecordPtr));
+                                    reinterpret_cast<void*>(rpcResultPtr));
     }
 
-    // Respond to the client RPC now. Removing old index entries can be
-    // done asynchronously while maintaining strong consistency.
-    rpc->sendReply();
-    // reqHdr, respHdr, and rpc are off-limits now!
-
-    // If this is a overwrite, delete old index entries if any.
+    // If this is a overwrite, delete old index entries if any (this can
+    // be done asynchronously after sending a reply).
     if (oldObjectBuffer.size() > 0) {
-        requestRemoveIndexEntries(oldObjectBuffer);
+        Object oldObject(oldObjectBuffer);
+        if (oldObject.getKeyCount() > 1) {
+            rpc->sendReply();
+            requestRemoveIndexEntries(oldObject);
+        }
     }
 }
 
@@ -2988,10 +3121,11 @@ MasterService::recover(uint64_t recoveryId, ServerId masterId,
                 task->replica.state = Replica::State::FAILED;
                 runningSet.erase(task->replica.segmentId);
             } catch (const ClientException& e) {
-                LOG(WARNING, "getRecoveryData failed on %s, "
+                LOG(WARNING, "getRecoveryData failed on %s for segment %lu, "
                         "trying next backup; failure was: %s",
                         context->serverList->toString(
                                 task->replica.backupId).c_str(),
+                        task->replica.segmentId,
                         e.str().c_str());
                 task->replica.state = Replica::State::FAILED;
                 runningSet.erase(task->replica.segmentId);

@@ -31,8 +31,18 @@ namespace RAMCloud {
  * used, for example, as a result of the GET_PERF_STATS server control).
  * In order for aggregation to work, each thread must invoke the
  * registerStats method.
+ *
+ * This class should eventually replace RawMetrics because it is more
+ * efficient (due to its use of thread-local structures).
  */
 struct PerfStats {
+    /// Unique identifier for this thread (threads are numbered starting
+    /// at 1); Only used in thread-local instances (0 means this object
+    /// contains aggregate statistics). This field isn't typically
+    /// needed for gathering performance stats, but this is a convenient
+    /// place to put it, since it's readily available in all threads.
+    int threadId;
+
     /// Time (in cycles) when the statistics were gathered (only
     /// present in aggregate statistics, not in thread-local instances).
     uint64_t collectionTime;
@@ -90,8 +100,32 @@ struct PerfStats {
     uint64_t cleanerActiveCycles;
 
     //--------------------------------------------------------------------
-    // Statistics for the dispatch thread follow below.
+    // Statistics for backup I/O follow below.
     //--------------------------------------------------------------------
+
+    /// Total bytes of data read from secondary storage.
+    uint64_t backupReadBytes;
+
+    /// Total time (in Cycles::rdtsc ticks) during which secondary
+    /// storage device(s) were actively performing backup reads.
+    uint64_t backupReadActiveCycles;
+
+    /// Total bytes of data written to secondary storage.
+    uint64_t backupWriteBytes;
+
+    /// Total time (in Cycles::rdtsc ticks) during which secondary
+    /// storage device(s) were actively performing backup writes.
+    uint64_t backupWriteActiveCycles;
+
+    //--------------------------------------------------------------------
+    // Statistics for the network follow below.
+    //--------------------------------------------------------------------
+
+    /// Total bytes received from the network via all transports.
+    uint64_t networkInputBytes;
+
+    /// Total bytes transmitted on the network by all transports.
+    uint64_t networkOutputBytes;
 
     //--------------------------------------------------------------------
     // Temporary counters. The values below have no pre-defined use;
@@ -125,6 +159,10 @@ struct PerfStats {
     /// each thread). This allows us to find all of the structures to
     /// aggregate their statistics in collectStats.
     static std::vector<PerfStats*> registeredStats;
+
+    /// Next value to assign for the threadId member variable.  Used only
+    /// by RegisterStats.
+    static int nextThreadId;
 };
 
 } // end RAMCloud

@@ -13,14 +13,15 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef RAMCLOUD_PREPAREDWRITES_H
-#define RAMCLOUD_PREPAREDWRITES_H
+#ifndef RAMCLOUD_PREPAREDOPS_H
+#define RAMCLOUD_PREPAREDOPS_H
 
 #include <map>
 #include <utility>
 #include "Common.h"
 #include "Object.h"
 #include "SpinLock.h"
+#include "WireFormat.h"
 #include "WorkerTimer.h"
 
 namespace RAMCloud {
@@ -230,9 +231,24 @@ class PreparedOps {
      */
     class PreparedItem : public WorkerTimer {
       public:
+        /**
+         * Default constructor.
+         * \param context
+         *      RAMCloud context to work on.
+         * \param newOpPtr
+         *      Log reference to PreparedOp in the log.
+         */
         PreparedItem(Context* context, uint64_t newOpPtr)
             : WorkerTimer(context->dispatch)
             , newOpPtr(newOpPtr) {}
+
+        /**
+         * Default destructor. Stops WorkerTimer and waits for running handler
+         * for safe destruction.
+         */
+        ~PreparedItem() {
+            stop();
+        }
 
         //TODO(seojin): handler may not protected from destruction.
         //              Resolve this later.

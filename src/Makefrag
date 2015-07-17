@@ -111,12 +111,13 @@ SHARED_SRCFILES := \
 		   src/PingClient.cc \
 		   src/PingService.cc \
 		   src/PortAlarm.cc \
-		   src/PreparedWrites.cc \
+		   src/PreparedOps.cc \
 		   src/RamCloud.cc \
 		   src/RawMetrics.cc \
 		   src/ReplicaManager.cc \
 		   src/ReplicatedSegment.cc \
 		   src/RpcWrapper.cc \
+		   src/RpcResult.cc \
 		   src/RpcTracker.cc \
 		   src/Seglet.cc \
 		   src/SegletAllocator.cc \
