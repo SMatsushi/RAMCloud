@@ -13,9 +13,11 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include "ClientLease.h"
 #include "Logger.h"
 #include "LinearizableObjectRpcWrapper.h"
 #include "RamCloud.h"
+#include "RpcTracker.h"
 
 namespace RAMCloud {
 
@@ -48,9 +50,10 @@ LinearizableObjectRpcWrapper::LinearizableObjectRpcWrapper(
         RamCloud* ramcloud, bool linearizable, uint64_t tableId,
         const void* key, uint16_t keyLength, uint32_t responseHeaderLength,
         Buffer* response)
-    : ObjectRpcWrapper(ramcloud, tableId, key, keyLength,
+    : ObjectRpcWrapper(ramcloud->clientContext, tableId, key, keyLength,
                        responseHeaderLength, response)
     , linearizabilityOn(linearizable)
+    , ramcloud(ramcloud)
     , assignedRpcId(0)
 {
 }
@@ -80,9 +83,10 @@ LinearizableObjectRpcWrapper::LinearizableObjectRpcWrapper(
 LinearizableObjectRpcWrapper::LinearizableObjectRpcWrapper(
         RamCloud* ramcloud, bool linearizable, uint64_t tableId,
         uint64_t keyHash, uint32_t responseHeaderLength, Buffer* response)
-    : ObjectRpcWrapper(ramcloud, tableId, keyHash,
+    : ObjectRpcWrapper(ramcloud->clientContext, tableId, keyHash,
                        responseHeaderLength, response)
     , linearizabilityOn(linearizable)
+    , ramcloud(ramcloud)
     , assignedRpcId(0)
 {
 }
@@ -93,7 +97,7 @@ LinearizableObjectRpcWrapper::LinearizableObjectRpcWrapper(
 LinearizableObjectRpcWrapper::~LinearizableObjectRpcWrapper()
 {
     if (linearizabilityOn && assignedRpcId) {
-        ramcloud->rpcTracker.rpcFinished(assignedRpcId);
+        ramcloud->rpcTracker->rpcFinished(assignedRpcId);
         assignedRpcId = 0;
     }
 }
@@ -108,7 +112,7 @@ LinearizableObjectRpcWrapper::cancel()
 {
     RpcWrapper::cancel();
     if (linearizabilityOn && assignedRpcId) {
-        ramcloud->rpcTracker.rpcFinished(assignedRpcId);
+        ramcloud->rpcTracker->rpcFinished(assignedRpcId);
         assignedRpcId = 0;
     }
 }
@@ -125,11 +129,11 @@ void
 LinearizableObjectRpcWrapper::fillLinearizabilityHeader(RpcRequest* reqHdr)
 {
     if (linearizabilityOn) {
-        assignedRpcId = ramcloud->rpcTracker.newRpcId(this);
+        assignedRpcId = ramcloud->rpcTracker->newRpcId(this);
         assert(assignedRpcId);
-        reqHdr->lease = ramcloud->clientLease.getLease();
+        reqHdr->lease = ramcloud->clientLease->getLease();
         reqHdr->rpcId = assignedRpcId;
-        reqHdr->ackId = ramcloud->rpcTracker.ackId();
+        reqHdr->ackId = ramcloud->rpcTracker->ackId();
     } else {
         reqHdr->rpcId = 0; // rpcId starts from 1. 0 means non-linearizable
         reqHdr->ackId = 0;
@@ -171,7 +175,7 @@ LinearizableObjectRpcWrapper::waitInternal(Dispatch* dispatch,
     assert(state == FINISHED || state == CANCELED);
 #endif
 
-    ramcloud->rpcTracker.rpcFinished(assignedRpcId);
+    ramcloud->rpcTracker->rpcFinished(assignedRpcId);
     assignedRpcId = 0;
     return true;
     }

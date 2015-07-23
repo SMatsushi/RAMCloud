@@ -1,4 +1,4 @@
-/* Copyright (c) 2013-2014 Stanford University
+/* Copyright (c) 2013-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -15,7 +15,10 @@
 
 #include <utility>
 
+#include "Context.h"
+#include "Dispatch.h"
 #include "MultiOp.h"
+#include "ObjectFinder.h"
 #include "ShortMacros.h"
 #include "TimeTrace.h"
 
@@ -36,17 +39,17 @@ namespace RAMCloud {
  * operation midway may result in half the MultiOps having executed and the
  * other half unexecuted.
  *
- * Internally, startRPCs dispatches the request array into sessionQueues, 
- * each of which buffers requests intended for a particular master (identified 
- * by its session).  Whenever a session queue reaches MAX_OBJECTS_PER_RPC it is 
- * packaged into an RPC and sent.  All sesseion queues are drained (sent) once 
+ * Internally, startRPCs dispatches the request array into sessionQueues,
+ * each of which buffers requests intended for a particular master (identified
+ * by its session).  Whenever a session queue reaches MAX_OBJECTS_PER_RPC it is
+ * packaged into an RPC and sent.  All sesseion queues are drained (sent) once
  * all requests are dispatched.  startRPC is typically called multiple times and
  * it returns to isReady whenever MAX_RPC RPCs are underway or when the MultiOp
  * is finished.
  *
- * isReady takes care of the respones by calling finishRpc, which can trigger a 
- * retry of an RPC if necessary.  The retry re-inserts the RPC into 
- * sessionQueues, allowing the session queue to grow slightly beyond 
+ * isReady takes care of the respones by calling finishRpc, which can trigger a
+ * retry of an RPC if necessary.  The retry re-inserts the RPC into
+ * sessionQueues, allowing the session queue to grow slightly beyond
  * MAX_OBJECTS_PER_RPC.
  *
  * isReady also calls startRPC when there is at least one free RPC.  The list
@@ -112,8 +115,8 @@ MultiOp::cancel()
  *      Either the next request from requests array or a request that needs to
  *      be retried.
  * \param[out] session
- *      Session that identifies the master that must service this request 
- *      (returned by ObjectFinder).  Can be NULL if the request is for a 
+ *      Session that identifies the master that must service this request
+ *      (returned by ObjectFinder).  Can be NULL if the request is for a
  *      non-existing table.
  * \param[out] queue
  *      Points to either a newly created session queue or a previously created
@@ -128,8 +131,8 @@ MultiOp::dispatchRequest(MultiOpObject* request,
     *session = NULL;
 
     try {
-       *session = ramcloud->objectFinder.lookup(request->tableId,
-                  request->key, request->keyLength);
+       *session = ramcloud->clientContext->objectFinder->lookup(
+               request->tableId, request->key, request->keyLength);
     }
     catch (TableDoesntExistException &e) {
         request->status = STATUS_TABLE_DOESNT_EXIST;
@@ -228,7 +231,7 @@ MultiOp::finishRpc(MultiOp::PartRpc* rpc) {
                         reinterpret_cast<const char*>(request->key));
                 messageLogged = true;
             }
-            ramcloud->objectFinder.flush(request->tableId);
+            ramcloud->clientContext->objectFinder->flush(request->tableId);
             request->status = STATUS_RETRY;
         }
 
@@ -480,7 +483,7 @@ MultiOp::PartRpc::handleTransportError()
         session = NULL;
     }
     for (uint32_t i = 0; i < reqHdr->count; i++) {
-        ramcloud->objectFinder.flush(requests[i]->tableId);
+        ramcloud->clientContext->objectFinder->flush(requests[i]->tableId);
     }
     return true;
 }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010 Stanford University
+/* Copyright (c) 2010-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -21,6 +21,7 @@
 #include "Driver.h"
 #include "MacAddress.h"
 #include "Memory.h"
+#include "ServiceLocator.h"
 #include "Tub.h"
 #include "Transport.h"
 
@@ -82,6 +83,7 @@ class Infiniband {
             : devices(ibv_get_device_list(NULL))
         {
             if (devices == NULL) {
+                RAMCLOUD_LOG(WARNING, "Could not open infiniband device list");
                 throw TransportException(HERE,
                     "Could not open infiniband device list", errno);
             }
@@ -115,6 +117,8 @@ class Infiniband {
 
             auto dev = deviceList.lookup(name);
             if (dev == NULL) {
+                RAMCLOUD_LOG(WARNING, "failed to find infiniband device: %s",
+                        name == NULL ? "any" : name);
                 throw TransportException(HERE,
                     format("failed to find infiniband device: %s",
                            name == NULL ? "any" : name), errno);
@@ -122,6 +126,8 @@ class Infiniband {
 
             ctxt = ibv_open_device(dev);
             if (ctxt == NULL) {
+                RAMCLOUD_LOG(WARNING, "failed to open infiniband device: %s",
+                        name == NULL ? "any" : name);
                 throw TransportException(HERE,
                     format("failed to open infiniband device: %s",
                            name == NULL ? "any" : name), errno);
