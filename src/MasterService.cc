@@ -808,40 +808,39 @@ MasterService::lookupIndexKeys(
  *      The total number of bytes copied into segments for transfer thus
  *      far, which we add to whenever we append any entry to a transfer
  *      segment.
- * \param reqHdr
- *      Header from the incoming RPC request; contains parameters
- *      for this operation.
- * \param[out] respHdr
- *      Header for the response that will be returned to the client.
- *      The caller has pre-allocated the right amount of space in the
- *      response buffer for this type of request, and has zeroed out
- *      its contents (so, for example, status is already zero).
+ * \param tableId
+ *      ID of the table from which objects are being migrated.
+ * \param firstKeyHash
+ *      Lowest key hash that will be migrated.
+ * \param lastKeyHash
+ *      Highest key hash that will be migrated.
+ * \param receiver
+ *      ServerId of the master that is receiving the migration data. Each time
+ *      a transfer segment fills, this server will be sent an RPC containing
+ *      the data.
  * \return
- *      Returns 0 on success (either the entry is ignored or successfully added
- *      to the segment) and 1 on failure (an entry could not be successfully
- *      appended to an empty segment).
+ *      Returns STATUS_OK on success (either the entry is ignored or
+ *      successfully added to the segment) or another status failure (an entry
+ *      could not be successfully appended to an empty segment).
  */
-int
+Status
 MasterService::migrateSingleLogEntry(
-        LogIterator& it,
+        SegmentIterator& it,
         Tub<Segment>& transferSeg,
         uint64_t entryTotals[],
         uint64_t& totalBytes,
-        const WireFormat::MigrateTablet::Request* reqHdr,
-        WireFormat::MigrateTablet::Response* respHdr)
+        uint64_t tableId,
+        uint64_t firstKeyHash,
+        uint64_t lastKeyHash,
+        ServerId receiver)
 {
-    uint64_t tableId = reqHdr->tableId;
-    uint64_t firstKeyHash = reqHdr->firstKeyHash;
-    uint64_t lastKeyHash = reqHdr->lastKeyHash;
-    ServerId newOwnerMasterId(reqHdr->newOwnerMasterId);
-
     LogEntryType type = it.getType();
     if (type != LOG_ENTRY_TYPE_OBJ &&
         type != LOG_ENTRY_TYPE_OBJTOMB &&
         type != LOG_ENTRY_TYPE_TXDECISION)
     {
         // We aren't interested in any other types.
-        return 0;
+        return STATUS_OK;
     }
 
     Buffer buffer;
@@ -861,10 +860,12 @@ MasterService::migrateSingleLogEntry(
 
     // Skip if not applicable.
     if (entryTableId != tableId)
-        return 0;
+        return STATUS_OK;
+
+    // TODO(stutsman) May want to hold back on computing hashes until here?
 
     if (entryKeyHash < firstKeyHash || entryKeyHash > lastKeyHash)
-        return 0;
+        return STATUS_OK;
 
     if (type == LOG_ENTRY_TYPE_OBJ) {
         // Only send objects when they're currently in the hash table.
@@ -872,7 +873,7 @@ MasterService::migrateSingleLogEntry(
         Key key(type, buffer);
         if (!objectManager.keyPointsAtReference(key,
                     it.getReference())) {
-            return 0;
+            return STATUS_OK;
         }
 
     } else if (type == LOG_ENTRY_TYPE_OBJTOMB) {
@@ -892,12 +893,15 @@ MasterService::migrateSingleLogEntry(
 
     if (!transferSeg)
         transferSeg.construct();
+
     // If we can't fit it, send the current buffer and retry.
     if (!transferSeg->append(type, buffer)) {
         transferSeg->close();
         LOG(DEBUG, "Sending migration segment");
-        MasterClient::receiveMigrationData(context, newOwnerMasterId,
-                transferSeg.get(), tableId, firstKeyHash);
+        if (expect_true(receiver != ServerId{})) {
+            MasterClient::receiveMigrationData(context, receiver,
+                    transferSeg.get(), tableId, firstKeyHash);
+        }
 
         transferSeg.destroy();
         transferSeg.construct();
@@ -907,11 +911,10 @@ MasterService::migrateSingleLogEntry(
             LOG(ERROR, "Tablet migration failed: could not fit object "
                     "into empty segment (obj bytes %u)",
                     buffer.size());
-            respHdr->common.status = STATUS_INTERNAL_ERROR;
-            return 1;
+            return STATUS_INTERNAL_ERROR;
         }
     }
-    return 0;
+    return STATUS_OK;
 }
 
 /**
@@ -930,7 +933,7 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
     uint64_t tableId = reqHdr->tableId;
     uint64_t firstKeyHash = reqHdr->firstKeyHash;
     uint64_t lastKeyHash = reqHdr->lastKeyHash;
-    ServerId newOwnerMasterId(reqHdr->newOwnerMasterId);
+    ServerId receiver(reqHdr->newOwnerMasterId);
 
     // Find the tablet we're trying to move. We only support migration
     // when the tablet to be migrated consists of a range within a single,
@@ -944,7 +947,7 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
         return;
     }
 
-    if (newOwnerMasterId == serverId) {
+    if (receiver == serverId) {
         LOG(WARNING, "Migrating to myself doesn't make much sense");
         respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
         return;
@@ -956,14 +959,14 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
     // there was no way of figuring that out before. Perhaps we can use the
     // "new" TableStats mechanism.
 
-    MasterClient::prepForMigration(context, newOwnerMasterId, tableId,
+    MasterClient::prepForMigration(context, receiver, tableId,
             firstKeyHash, lastKeyHash);
     LogPosition newOwnerLogHead = MasterClient::getHeadOfLog(
-            context, newOwnerMasterId);
+            context, receiver);
 
     LOG(NOTICE, "Migrating tablet [0x%lx,0x%lx] in tableId %lu to %s",
         firstKeyHash, lastKeyHash, tableId,
-        context->serverList->toString(newOwnerMasterId).c_str());
+        context->serverList->toString(receiver).c_str());
 
     // We'll send over objects in Segment containers for better network
     // efficiency and convenience.
@@ -975,8 +978,11 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
     LogIterator it(*objectManager.getLog(), false);
     // Scan the log from oldest to newest entries until we reach the head
     for (; !it.onHead(); it.next()) {
-        int error = migrateSingleLogEntry(
-                it, transferSeg, entryTotals, totalBytes, reqHdr, respHdr);
+        Status error = migrateSingleLogEntry(
+                *it.getCurrentSegmentIterator(),
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
         if (error) return;
     }
 
@@ -1006,8 +1012,11 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
         it.refresh();
 
         for (; it.getPosition() < position; it.next()) {
-            int error = migrateSingleLogEntry(
-                    it, transferSeg, entryTotals, totalBytes, reqHdr, respHdr);
+            Status error = migrateSingleLogEntry(
+                    *it.getCurrentSegmentIterator(),
+                    transferSeg, entryTotals, totalBytes,
+                    tableId, firstKeyHash, lastKeyHash,
+                    receiver);
             if (error) return;
         }
     }
@@ -1015,7 +1024,7 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
     if (transferSeg) {
         transferSeg->close();
         LOG(DEBUG, "Sending last migration segment");
-        MasterClient::receiveMigrationData(context, newOwnerMasterId,
+        MasterClient::receiveMigrationData(context, receiver,
                 transferSeg.get(), tableId, firstKeyHash);
         transferSeg.destroy();
     }
@@ -1025,7 +1034,7 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
     // data is all on the other machine and the coordinator knows to use it
     // for any recoveries.
     CoordinatorClient::reassignTabletOwnership(context,
-            tableId, firstKeyHash, lastKeyHash, newOwnerMasterId,
+            tableId, firstKeyHash, lastKeyHash, receiver,
             newOwnerLogHead.getSegmentId(), newOwnerLogHead.getSegmentOffset());
 
     LOG(NOTICE, "Migration succeeded for tablet [0x%lx,0x%lx] in "
@@ -1033,7 +1042,7 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
             "%lu bytes in total",
             firstKeyHash, lastKeyHash, tableId, entryTotals[LOG_ENTRY_TYPE_OBJ],
             entryTotals[LOG_ENTRY_TYPE_OBJTOMB],
-            context->serverList->toString(newOwnerMasterId).c_str(),
+            context->serverList->toString(receiver).c_str(),
             totalBytes);
 
     tabletManager.deleteTablet(tableId, firstKeyHash, lastKeyHash);
@@ -1865,7 +1874,7 @@ MasterService::requestRemoveIndexEntries(Object& object)
  * If there is an error, this method will set the status code of the response
  * to the client to be an error.
  *
- * \param newOwnerMasterId
+ * \param receiver
  *      Identifier for the master that will receive the split indexlet.
  * \param tableId
  *      Identifier for the table.
@@ -1904,7 +1913,7 @@ MasterService::requestRemoveIndexEntries(Object& object)
  */
 int
 MasterService::migrateSingleIndexObject(
-        ServerId newOwnerMasterId, uint64_t tableId, uint8_t indexId,
+        ServerId receiver, uint64_t tableId, uint8_t indexId,
         uint64_t currentBackingTableId, uint64_t newBackingTableId,
         const void* splitKey, uint16_t splitKeyLength,
         LogIterator& it,
@@ -1988,7 +1997,7 @@ MasterService::migrateSingleIndexObject(
         // by newBackingTableId) and
         // the newOwner has a tablet that spans the entire key hash
         // range of this backing table.
-        MasterClient::receiveMigrationData(context, newOwnerMasterId,
+        MasterClient::receiveMigrationData(context, receiver,
                 transferSeg.get(), newBackingTableId, 0,
                 true, tableId, indexId, splitKey, splitKeyLength);
 
@@ -2023,7 +2032,7 @@ MasterService::splitAndMigrateIndexlet(
         WireFormat::SplitAndMigrateIndexlet::Response* respHdr,
         Rpc* rpc)
 {
-    ServerId newOwnerMasterId(reqHdr->newOwnerId);
+    ServerId receiver(reqHdr->newOwnerId);
     uint64_t tableId = reqHdr->tableId;
     uint8_t indexId = reqHdr->indexId;
     uint64_t currentBackingTableId = reqHdr->currentBackingTableId;
@@ -2061,7 +2070,7 @@ MasterService::splitAndMigrateIndexlet(
         return;
     }
 
-    if (newOwnerMasterId == serverId) {
+    if (receiver == serverId) {
         LOG(WARNING, "Migrating to myself doesn't make much sense.");
         respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
         return;
@@ -2071,7 +2080,7 @@ MasterService::splitAndMigrateIndexlet(
             "indexId %u in tableId %lu from %s (this server) to %s.",
             indexId, tableId,
             context->serverList->toString(serverId).c_str(),
-            context->serverList->toString(newOwnerMasterId).c_str());
+            context->serverList->toString(receiver).c_str());
 
     // We'll send over objects in Segment containers for better network
     // efficiency and convenience.
@@ -2086,7 +2095,7 @@ MasterService::splitAndMigrateIndexlet(
     // Scan the log from oldest to newest entries until we reach the head.
     for (; !it.isDone(); it.next()) {
         int error = migrateSingleIndexObject(
-                newOwnerMasterId, tableId, indexId,
+                receiver, tableId, indexId,
                 currentBackingTableId, newBackingTableId,
                 splitKey, splitKeyLength,
                 it, transferSeg, totalObjects, totalTombstones, totalBytes,
@@ -2126,7 +2135,7 @@ MasterService::splitAndMigrateIndexlet(
 
         for (; it.getPosition() < position; it.next()) {
             int error = migrateSingleIndexObject(
-                    newOwnerMasterId, tableId, indexId,
+                    receiver, tableId, indexId,
                     currentBackingTableId, newBackingTableId,
                     splitKey, splitKeyLength,
                     it, transferSeg, totalObjects, totalTombstones, totalBytes,
@@ -2138,7 +2147,7 @@ MasterService::splitAndMigrateIndexlet(
     if (transferSeg) {
         transferSeg->close();
         LOG(DEBUG, "Sending last migration segment");
-        MasterClient::receiveMigrationData(context, newOwnerMasterId,
+        MasterClient::receiveMigrationData(context, receiver,
                 transferSeg.get(), newBackingTableId, 0,
                 true, tableId, indexId, splitKey, splitKeyLength);
         transferSeg.destroy();

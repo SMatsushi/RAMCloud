@@ -16,6 +16,7 @@
 #include "TimeTrace.h"
 
 namespace RAMCloud {
+TimeTrace* TimeTrace::globalTimeTrace;
 
 /**
  * Construct a TimeTrace.
@@ -29,6 +30,7 @@ TimeTrace::TimeTrace()
     for (int i = 0; i < BUFFER_SIZE; i++) {
         events[i].message = NULL;
     }
+    globalTimeTrace = this;
 }
 
 /**

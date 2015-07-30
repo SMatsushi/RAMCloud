@@ -69,6 +69,7 @@ TESTS_SRCFILES := \
 		  src/LeaseManagerTest.cc \
 		  src/LinearizableObjectRpcWrapperTest.cc \
 		  src/LockTableTest.cc \
+		  src/LogCabinStorageTest.cc \
 		  src/LogCleanerTest.cc \
 		  src/LogDigestTest.cc \
 		  src/LogEntryRelocatorTest.cc \
@@ -227,6 +228,7 @@ $(OBJDIR)/zooTest: $(ZOO_TESTS_OBJFILES) $(OBJDIR)/gtest.a
 # The unit tests don't actually call all of these programs, but
 # they are included here to make sure they continue to build.
 test: $(OBJDIR)/test \
+      $(OBJDIR)/zooTest \
       $(OBJDIR)/CleanerCompactionBenchmark \
       $(OBJDIR)/ClusterPerf \
       $(OBJDIR)/CoordinatorCrashRecovery \
@@ -235,6 +237,7 @@ test: $(OBJDIR)/test \
       $(OBJDIR)/ObjectManagerBenchmark \
       $(OBJDIR)/Perf \
       $(OBJDIR)/RecoverSegmentBenchmark \
+      $(OBJDIR)/MigrateTabletBenchmark \
       testInstall
 	$(OBJDIR)/test
 
@@ -257,8 +260,9 @@ zooTest: $(OBJDIR)/zooTest
 # does *not* use the normal compilation flags, since we only want installed
 # info to be available.
 testInstall: install
-	g++ --std=c++0x -g -DNDEBUG -Iinclude -I. src/TestClient.cc \
-            -o $(OBJDIR)/TestClient -Lbin -lramcloud -Wl,-rpath=bin
+	g++ --std=c++0x -g -DNDEBUG -Iinstall/include -I. src/TestClient.cc \
+            -o $(OBJDIR)/TestClient -Linstall/bin -lramcloud \
+            -Wl,-rpath=install/bin
 
 $(OBJDIR)/HashTableBenchmark: $(OBJDIR)/HashTableBenchmark.o $(SHARED_OBJFILES) $(SERVER_OBJFILES)
 	@mkdir -p $(@D)
@@ -269,6 +273,10 @@ $(OBJDIR)/Echo: $(OBJDIR)/Echo.o $(SHARED_OBJFILES) $(SERVER_OBJFILES)
 	$(CXX) -o $@ $^ $(LIBS)
 
 $(OBJDIR)/RecoverSegmentBenchmark: $(OBJDIR)/RecoverSegmentBenchmark.o $(SHARED_OBJFILES) $(SERVER_OBJFILES)
+	@mkdir -p $(@D)
+	$(CXX) -o $@ $^ $(LIBS)
+
+$(OBJDIR)/MigrateTabletBenchmark: $(OBJDIR)/MigrateTabletBenchmark.o $(SHARED_OBJFILES) $(SERVER_OBJFILES)
 	@mkdir -p $(@D)
 	$(CXX) -o $@ $^ $(LIBS)
 
