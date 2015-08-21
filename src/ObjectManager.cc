@@ -426,8 +426,7 @@ ObjectManager::removeObject(Key& key, RejectRules* rejectRules,
     // number, and remove from the hash table.
     if (!log.append(LOG_ENTRY_TYPE_OBJTOMB, tombstoneBuffer)) {
         // The log is out of space. Tell the client to retry and hope
-        // that either the cleaner makes space soon or we shift load
-        // off of this server.
+        // that the cleaner makes space soon.
         return STATUS_RETRY;
     }
 
@@ -1109,25 +1108,6 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
                 uint64_t* outVersion, Buffer* removedObjBuffer,
                 RpcResult* rpcResult, uint64_t* rpcResultPtr)
 {
-    if (!anyWrites) {
-        // This is the first write; use this as a trigger to update the
-        // cluster configuration information and open a session with each
-        // backup, so it won't slow down recovery benchmarks.  This is a
-        // temporary hack, and needs to be replaced with a more robust
-        // approach to updating cluster configuration information.
-        anyWrites = true;
-
-        // Empty coordinator locator means we're in test mode, so skip this.
-        if (!context->coordinatorSession->getLocation().empty()) {
-            ProtoBuf::ServerList backups;
-            CoordinatorClient::getBackupList(context, &backups);
-            TransportManager& transportManager =
-                *context->transportManager;
-            foreach(auto& backup, backups.server())
-                transportManager.getSession(backup.service_locator());
-        }
-    }
-
     uint16_t keyLength = 0;
     const void *keyString = newObject.getKey(0, &keyLength);
     Key key(newObject.getTableId(), keyString, keyLength);
@@ -1148,6 +1128,7 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
 
     // If key is locked due to an in-progress transaction, we must wait.
     if (lockTable.isLockAcquired(key)) {
+        RAMCLOUD_CLOG(NOTICE, "Retrying because of transaction lock");
         return STATUS_RETRY;
     }
 
@@ -1217,10 +1198,10 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
     newObject.assembleForLog(appends[0].buffer);
     appends[0].type = LOG_ENTRY_TYPE_OBJ;
 
+    // Note: only check for enough space for the object (tombstones
+    // don't get included in the limit, since they can be cleaned).
     if (!log.hasSpaceFor(appends[0].buffer.size())) {
-        // We must bound the amount of live data to ensure deletes are possible
-        RAMCLOUD_CLOG(NOTICE, "Log is out of space, rejecting object write!");
-        throw RetryException(HERE, 1000, 2000, "Log is out of space!");
+        throw RetryException(HERE, 1000, 2000, "Memory capacity exceeded");
     }
 
     if (tombstone) {
@@ -1239,9 +1220,8 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
 
     if (!log.append(appends, (tombstone ? 2 : 1) + (rpcResult ? 1 : 0))) {
         // The log is out of space. Tell the client to retry and hope
-        // that either the cleaner makes space soon or we shift load
-        // off of this server.
-        return STATUS_RETRY;
+        // that the cleaner makes space soon.
+        throw RetryException(HERE, 1000, 2000, "Must wait for cleaner");
     }
 
     if (tombstone) {
@@ -1290,6 +1270,17 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
     return STATUS_OK;
 }
 
+/**
+ * Write the RpcResult log-entry indicating that transaction prepare has failed
+ * and transition should be aborted.
+ * This function is used in txPrepare or handler of TxRequestAbort.
+ * \param rpcResult
+ *      This method appends rpcResult to the log atomically with
+ *      the other record(s) for the write. The extra record is used to ensure
+ *      linearizability.
+ * \param[out] rpcResultPtr
+ *      The pointer to the RpcResult in log is returned.
+ */
 void
 ObjectManager::writePrepareFail(RpcResult* rpcResult, uint64_t* rpcResultPtr)
 {
@@ -1300,8 +1291,6 @@ ObjectManager::writePrepareFail(RpcResult* rpcResult, uint64_t* rpcResultPtr)
     av.type = LOG_ENTRY_TYPE_RPCRESULT;
 
     if (!log.hasSpaceFor(av.buffer.size()) || !log.append(&av, 1)) {
-        RAMCLOUD_CLOG(NOTICE,
-                "Log is out of space for TX ABORT-VOTE. Asking for retry.");
         throw RetryException(HERE, 1000, 2000,
                 "Log is out of space! Transaction abort-vote wasn't logged.");
         //TODO(seojin): Possible safety violation. Abort-vote is not written.
@@ -1332,16 +1321,16 @@ ObjectManager::writePrepareFail(RpcResult* rpcResult, uint64_t* rpcResultPtr)
  * \param[out] newOpPtr
  *      The pointer to the PreparedOp in log is returned.
  * \param[out] isCommitVote
- *      VoMate result after prepare is returned.
+ *      Vote result after prepare is returned.
  * \param rpcResult
  *      This method appends rpcResult to the log atomically with
- *      the Maother record(s) for the write. The extra record is used to ensure
+ *      the other record(s) for the write. The extra record is used to ensure
  *      linearizability.
  * \param[out] rpcResultPtr
- *      The poMainter to the RpcResult in log is returned.
+ *      The pointer to the RpcResult in log is returned.
  * \return
  *      STATUS_OK if the object was written. Otherwise, for example,
- *      STATUS_UMaKNOWN_TABLE may be returned.
+ *      STATUS_UNKNOWN_TABLE may be returned.
  */
 Status
 ObjectManager::prepareOp(PreparedOp& newOp, RejectRules* rejectRules,
@@ -1384,7 +1373,8 @@ ObjectManager::prepareOp(PreparedOp& newOp, RejectRules* rejectRules,
 
     // If the key is already locked, abort.
     if (lockTable.isLockAcquired(key)) {
-        RAMCLOUD_LOG(DEBUG, "TxPrepare fail. Key: %.*s, object is already lock",
+        RAMCLOUD_LOG(DEBUG,
+                "TxPrepare fail. Key: %.*s, object is already locked",
                 keyLength, reinterpret_cast<const char*>(keyString));
         writePrepareFail(rpcResult, rpcResultPtr);
         return STATUS_OK;
@@ -1446,9 +1436,6 @@ ObjectManager::prepareOp(PreparedOp& newOp, RejectRules* rejectRules,
     if (!log.hasSpaceFor(appends[0].buffer.size() + appends[1].buffer.size())) {
         // We must bound the amount of live data to ensure deletes are possible
         writePrepareFail(rpcResult, rpcResultPtr);
-
-        RAMCLOUD_CLOG(NOTICE, "Log is out of space, aborting transaction!");
-        //throw RetryException(HERE, 1000, 2000, "Log is out of space!");
         return STATUS_OK;
     }
 
@@ -1558,9 +1545,6 @@ ObjectManager::writeTxDecisionRecord(TxDecisionRecord& record)
     record.assembleForLog(recordBuffer);
 
     if (!log.append(LOG_ENTRY_TYPE_TXDECISION, recordBuffer)) {
-        RAMCLOUD_CLOG(NOTICE,
-                      "Log is out of space, "
-                      "rejecting write of transaction decision record!");
         return STATUS_RETRY;
     }
 
@@ -1817,8 +1801,6 @@ ObjectManager::commitWrite(PreparedOp& op,
 
     if (!log.hasSpaceFor(appends[1].buffer.size())) {
         // We must bound the amount of live data to ensure deletes are possible
-        RAMCLOUD_CLOG(NOTICE, "Log is out of space, rejecting committing"
-                              " prepared write during transaction!");
         throw RetryException(HERE, 1000, 2000, "Log is out of space!");
     }
 

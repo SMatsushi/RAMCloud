@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2013 Stanford University
+/* Copyright (c) 2011-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -61,7 +61,7 @@ Syscall* Dispatch::sys = &defaultSyscall;
  *      themselves.
  */
 Dispatch::Dispatch(bool hasDedicatedThread)
-    : currentTime(Cycles::rdtsc())
+    : currentTime(0)
     , pollers()
     , files()
     , epollFd(-1)
@@ -149,8 +149,9 @@ Dispatch::poll()
         pollingTimes[nextInd] = currentTime - previous;
         nextInd = (nextInd + 1) % totalElements;
     }
-    if (((currentTime - previous) > slowPollerCycles) && hasDedicatedThread) {
-        LOG(NOTICE, "Long gap in dispatcher: %.1f ms",
+    if (((currentTime - previous) > slowPollerCycles) && (previous != 0)
+            && hasDedicatedThread) {
+        LOG(WARNING, "Long gap in dispatcher: %.1f ms",
                 Cycles::toSeconds(currentTime - previous)*1e03);
     }
     if (lockNeeded.load() != 0) {

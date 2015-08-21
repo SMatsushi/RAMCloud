@@ -30,6 +30,13 @@ else
 SOLARFLARE_SRC :=
 endif
 
+ifeq ($(DPDK),yes)
+DPDK_SRC := \
+        src/DpdkDriver.cc \
+        $(NULL)
+else
+DPDK_SRC :=
+endif
 
 # these files are compiled into everything but clients
 SHARED_SRCFILES := \
@@ -148,6 +155,7 @@ SHARED_SRCFILES := \
 		   src/ThreadId.cc \
 		   src/TimeCounter.cc \
 		   src/TimeTrace.cc \
+		   src/TimeTraceUtil.cc \
 		   src/Transport.cc \
 		   src/TransportManager.cc \
 		   src/TxDecisionRecord.cc \
@@ -161,6 +169,7 @@ SHARED_SRCFILES := \
 		   src/WorkerTimer.cc \
 		   $(INFINIBAND_SRCFILES) \
 		   $(SOLARFLARE_SRC) \
+                   $(DPDK_SRC) \
 		   $(OBJDIR)/EnumerationIterator.pb.cc \
 		   $(OBJDIR)/Histogram.pb.cc \
 		   $(OBJDIR)/LogMetrics.pb.cc \

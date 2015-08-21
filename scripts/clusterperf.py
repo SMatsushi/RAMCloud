@@ -438,8 +438,7 @@ def transactionThroughput(name, options, cluster_args, client_args):
     if cluster_args['num_clients'] < 2:
         print("Not enough machines in the cluster to run the '%s' benchmark"
                 % name)
-        print("Need at least %d machines in this configuration" %
-                (cluster_args['num_servers'] + 2))
+        print("Need at least 2 machines in this configuration")
         return
     if options.numTables == None:
         client_args['--numTables'] = 1
@@ -501,6 +500,8 @@ def readDist(name, options, cluster_args, client_args):
     print_cdf_from_log()
 
 def readDistRandom(name, options, cluster_args, client_args):
+    if 'master_args' not in cluster_args:
+        cluster_args['master_args'] = '-t 1000'
     cluster.run(client='%s/ClusterPerf %s %s' %
             (obj_path,  flatten_args(client_args), name),
             **cluster_args)
@@ -548,8 +549,7 @@ def readThroughput(name, options, cluster_args, client_args):
     if cluster_args['num_clients'] < 2:
         print("Not enough machines in the cluster to run the '%s' benchmark"
                 % name)
-        print("Need at least %d machines in this configuration" %
-                (cluster_args['num_servers'] + 2))
+        print("Need at least 2 machines in this configuration")
         return
     cluster.run(client='%s/ClusterPerf %s %s' %
             (obj_path, flatten_args(client_args), name), **cluster_args)
@@ -679,7 +679,8 @@ if __name__ == '__main__':
             help='Number of times to perform the operation')
     parser.add_option('--disjunct', action='store_true', default=False,
             metavar='True/False',
-            help='Disjunct (not collocate) entities on a server')
+            help='Do not colocate clients on a node (servers are never '
+                  'colocated, regardless of this option)')
     parser.add_option('--debug', action='store_true', default=False,
             help='Pause after starting servers but before running '
                  'clients to enable debugging setup')
@@ -726,7 +727,7 @@ if __name__ == '__main__':
             choices=['YCSB-A', 'YCSB-B', 'YCSB-C', 'WRITE-ONLY'],
             help='Name of workload to run on extra clients to generate load')
     parser.add_option('--targetOps', type=int,
-            help='Operations per second that each load generating client'
+            help='Operations per second that each load generating client '
             'will try to achieve')
     parser.add_option('-i', '--numIndexlet', type=int,
             help='Number of indexlets for measuring index scalability ')
