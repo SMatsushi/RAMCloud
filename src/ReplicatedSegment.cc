@@ -14,6 +14,7 @@
  */
 
 #include "BitOps.h"
+#include "PerfStats.h"
 #include "ReplicatedSegment.h"
 #include "Segment.h"
 #include "ShortMacros.h"
@@ -121,6 +122,7 @@ ReplicatedSegment::ReplicatedSegment(Context* context,
     , recoveringFromLostOpenReplicas(false)
     , listEntries()
     , replicationCounter(replicationCounter)
+    , unopenedStartCycles(Cycles::rdtsc())
     , replicas(numReplicas)
 {
     openLen = segment->getAppendedLength(&openingWriteCertificate);
@@ -529,14 +531,31 @@ void
 ReplicatedSegment::performTask()
 {
     if (freeQueued && !recoveringFromLostOpenReplicas) {
-        foreach (auto& replica, replicas)
+        foreach (Replica& replica, replicas)
             performFree(replica);
         if (!isScheduled()) // Everything is freed, destroy ourself.
             deleter.destroyAndFreeReplicatedSegment(this);
     } else if (!freeQueued) {
-        foreach (auto& replica, replicas)
+        foreach (Replica& replica, replicas)
             performWrite(replica);
     }
+
+    if (unopenedStartCycles != 0) {
+        // The segment is not yet known to be fully open. Once it gets
+        // fully open, update a performance counter with the time to
+        // open it.
+        bool open = true;
+        foreach (Replica& replica, replicas) {
+            if (!replica.committed.open)
+                open = false;
+        }
+        if (open) {
+            PerfStats::threadStats.segmentUnopenedCycles +=
+                    Cycles::rdtsc() - unopenedStartCycles;
+            unopenedStartCycles = 0;
+        }
+    }
+
     // Have to be a bit careful: these steps must be completed even if a
     // free has been enqueued, otherwise lost open replicas could still
     // be detected as the head of the log during a recovery. Hence the
@@ -803,6 +822,9 @@ ReplicatedSegment::performWrite(Replica& replica)
                                        masterId, segmentId, queued.epoch,
                                        segment, 0, openLen, certificateToSend,
                                        true, false, replicaIsPrimary(replica));
+            if (replicaIsPrimary(replica)) {
+                PerfStats::threadStats.replicationRpcs++;
+            }
             ++writeRpcsInFlight;
             if (LOG_RECOVERY_REPLICATION_RPC_TIMING && recoveryStart) {
                 LOG(DEBUG, "@%7lu: Replica <%s,%lu,%lu> write -> %7u+%7u "
@@ -879,6 +901,9 @@ ReplicatedSegment::performWrite(Replica& replica)
                                        certificateToSend,
                                        false, sendClose,
                                        replicaIsPrimary(replica));
+            if (replicaIsPrimary(replica)) {
+                PerfStats::threadStats.replicationRpcs++;
+            }
             ++writeRpcsInFlight;
             if (LOG_RECOVERY_REPLICATION_RPC_TIMING && recoveryStart) {
                 LOG(DEBUG, "@%7lu: Replica <%s,%lu,%lu> write -> %7u+%7u "

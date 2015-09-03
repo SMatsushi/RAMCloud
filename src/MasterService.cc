@@ -2586,6 +2586,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
 
     // 2. Process operations.
     uint32_t numRequests = reqHdr->opCount;
+    uint32_t numReadOnly = 0;
 
     updateClusterTime(reqHdr->lease.timestamp);
 
@@ -2688,6 +2689,48 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
                          currentReq->length);
 
             reqOffset += currentReq->length;
+        } else if (*type == WireFormat::TxPrepare::READONLY) {
+            numReadOnly++;
+            const WireFormat::TxPrepare::Request::ReadOp *currentReq =
+                    rpc->requestPayload->getOffset<
+                    WireFormat::TxPrepare::Request::ReadOp>(reqOffset);
+
+            reqOffset += sizeof32(WireFormat::TxPrepare::Request::ReadOp);
+
+            if (currentReq == NULL || rpc->requestPayload->size() <
+                                      reqOffset + currentReq->keyLength) {
+                respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
+                respHdr->vote = WireFormat::TxPrepare::ABORT;
+                break;
+            }
+            tableId = currentReq->tableId;
+            rpcId = currentReq->rpcId;
+            rejectRules = currentReq->rejectRules;
+
+            buffer.emplaceAppend<KeyCount>((unsigned char) 1);
+            buffer.emplaceAppend<CumulativeKeyLength>(currentReq->keyLength);
+            buffer.appendExternal(rpc->requestPayload, reqOffset,
+                                  currentReq->keyLength);
+
+            op.construct(*type, reqHdr->lease.leaseId, rpcId,
+                         participantCount, participants,
+                         tableId, 0, 0,
+                         buffer);
+
+            reqOffset += currentReq->keyLength;
+
+            // Since we prepare not to write anything on log and sync with
+            // backup and it is still safe without linearizability,
+            // we skip all linearizability mechanism for READONLY transactions.
+            bool isCommitVote;
+            respHdr->common.status = objectManager.prepareReadOnly(
+                    *op, &rejectRules, &isCommitVote);
+            if (!isCommitVote || respHdr->common.status != STATUS_OK) {
+                respHdr->vote = WireFormat::TxPrepare::ABORT;
+                break;
+            }
+            respHdr->vote = WireFormat::TxPrepare::PREPARED;
+            continue;
         } else {
             respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
             break;
@@ -2745,7 +2788,9 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
 
     // when it is a single server transaction, we commit the transaction
     // preemptively, so that a client doesn't need to send decision RPC.
-    if (numRequests == participantCount &&
+    // Assume that if there is at least one READ-ONLY request they should all
+    // be READ-ONLY and thus not need a decision phase.
+    if (numReadOnly == 0 && numRequests == participantCount &&
             respHdr->common.status == STATUS_OK &&
             respHdr->vote == WireFormat::TxPrepare::PREPARED) {
         for (uint32_t i = 0; i < participantCount; ++i) {

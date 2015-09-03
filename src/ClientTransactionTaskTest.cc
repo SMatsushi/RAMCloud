@@ -177,6 +177,7 @@ class ClientTransactionTaskTest : public ::testing::Test {
 
     void insertRemove(uint64_t tableId, const void* key, uint16_t keyLength)
     {
+        transactionTask->readOnly = false;
         insertEntry(ClientTransactionTask::CacheEntry::REMOVE,
                 tableId, key, keyLength, NULL, 0);
     }
@@ -184,6 +185,7 @@ class ClientTransactionTaskTest : public ::testing::Test {
     void insertWrite(uint64_t tableId, const void* key, uint16_t keyLength,
             const void* buf, uint32_t length)
     {
+        transactionTask->readOnly = false;
         insertEntry(ClientTransactionTask::CacheEntry::WRITE,
                 tableId, key, keyLength, buf, length);
     }
@@ -250,12 +252,18 @@ class ClientTransactionTaskTest : public ::testing::Test {
                             WireFormat::TxPrepare::OpType>(offset);
             switch (*type) {
                 case WireFormat::TxPrepare::READ:
+                case WireFormat::TxPrepare::READONLY:
                 {
                     WireFormat::TxPrepare::Request::ReadOp* entry =
                             rpc->request.getOffset<
                                     WireFormat::TxPrepare::Request::ReadOp>(
                                             offset);
-                    s.append(format(" READ{%lu, %lu}",
+                    if (*type == WireFormat::TxPrepare::READ) {
+                        s.append(" READ");
+                    } else {
+                        s.append(" READONLY");
+                    }
+                    s.append(format("{%lu, %lu}",
                             entry->tableId, entry->rpcId));
                     offset += sizeof32(WireFormat::TxPrepare::Request::ReadOp);
                     offset += entry->keyLength;
@@ -507,7 +515,21 @@ TEST_F(ClientTransactionTaskTest, performTask_singleRpcOptimization) {
               TestLog::get());
 }
 
+TEST_F(ClientTransactionTaskTest, performTask_readOnlyOptimization) {
+    insertRead(tableId1, "test1", 5);
+
+    TestLog::reset();
+    TestLog::setPredicate("performTask");
+    EXPECT_EQ(ClientTransactionTask::INIT, transactionTask->state);
+    EXPECT_EQ(1, transactionTask->performTask());// RPC 1 Sent, RPC 1 Processed
+    EXPECT_EQ(ClientTransactionTask::DONE, transactionTask->state);
+    EXPECT_EQ("performTask: Set decision to COMMIT. | "
+              "performTask: Move from PREPARE to DONE phase; optimized.",
+              TestLog::get());
+}
+
 TEST_F(ClientTransactionTaskTest, performTask_setDecision) {
+    transactionTask->readOnly = false;
     transactionTask->state = ClientTransactionTask::INIT;
     transactionTask->decision = WireFormat::TxDecision::UNDECIDED;
     TestLog::reset();
@@ -574,6 +596,7 @@ TEST_F(ClientTransactionTaskTest, Poller_poll) {
             taskPtr;
     taskPtr.construct(new ClientTransactionTask(ramcloud.get()));
     ClientTransactionTask* task = taskPtr.get()->get();
+    task->readOnly = false;
     // Give it something to do.
     ClientTransactionTask::CacheEntry* entry;
     Key key1(tableId1, "test1", 5);
@@ -1115,6 +1138,7 @@ TEST_F(ClientTransactionTaskTest, PrepareRpc_constructor) {
 
 TEST_F(ClientTransactionTaskTest, PrepareRpc_appendOp_read) {
     insertRead(tableId1, "0", 1);
+    transactionTask->readOnly = false;
 
     ClientTransactionTask::CommitCacheMap::iterator it =
             transactionTask->commitCache.begin();
@@ -1128,8 +1152,24 @@ TEST_F(ClientTransactionTaskTest, PrepareRpc_appendOp_read) {
               rpcToString(prepareRpc.get()));
 }
 
+TEST_F(ClientTransactionTaskTest, PrepareRpc_appendOp_readOnly) {
+    insertRead(tableId1, "0", 1);
+
+    ClientTransactionTask::CommitCacheMap::iterator it =
+            transactionTask->commitCache.begin();
+    it->second.rpcId = 42;
+    EXPECT_EQ(ClientTransactionTask::CacheEntry::PENDING, it->second.state);
+    EXPECT_TRUE(prepareRpc->appendOp(it));
+    EXPECT_EQ(ClientTransactionTask::CacheEntry::PREPARE, it->second.state);
+    EXPECT_EQ(prepareRpc->ops[prepareRpc->reqHdr->opCount - 1], it);
+    EXPECT_EQ("PrepareRpc :: lease{1} ackId{0} participantCount{0} opCount{1} "
+              "ParticipantList[ ] OpSet[ READONLY{1, 42} ]",
+              rpcToString(prepareRpc.get()));
+}
+
 TEST_F(ClientTransactionTaskTest, PrepareRpc_appendOp_remove) {
     insertRemove(2, "test", 4);
+    transactionTask->readOnly = false;
 
     ClientTransactionTask::CommitCacheMap::iterator it =
             transactionTask->commitCache.begin();
@@ -1145,6 +1185,7 @@ TEST_F(ClientTransactionTaskTest, PrepareRpc_appendOp_remove) {
 
 TEST_F(ClientTransactionTaskTest, PrepareRpc_appendOp_write) {
     insertWrite(3, "test", 4, "hello", 5);
+    transactionTask->readOnly = false;
 
     ClientTransactionTask::CommitCacheMap::iterator it =
             transactionTask->commitCache.begin();

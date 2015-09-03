@@ -31,6 +31,7 @@ namespace RAMCloud {
  */
 ClientTransactionTask::ClientTransactionTask(RamCloud* ramcloud)
     : ramcloud(ramcloud)
+    , readOnly(true)
     , participantCount(0)
     , participantList()
     , state(INIT)
@@ -137,15 +138,18 @@ ClientTransactionTask::performTask()
                     case WireFormat::TxDecision::UNDECIDED:
                         decision = WireFormat::TxDecision::COMMIT;
                         TEST_LOG("Set decision to COMMIT.");
-                        // NO break; fall through to go to DECISION state.
+                        // NO break; fall through to...
                     case WireFormat::TxDecision::ABORT:
-                        nextCacheEntry = commitCache.begin();
-                        state = DECISION;
-                        TEST_LOG("Move from PREPARE to DECISION phase.");
-                        break;
+                        if (!readOnly) {
+                            nextCacheEntry = commitCache.begin();
+                            state = DECISION;
+                            TEST_LOG("Move from PREPARE to DECISION phase.");
+                            break;
+                        }
+                        // NO break; fall through to...
                     case WireFormat::TxDecision::COMMIT:
-                        // Prepare must have returned COMMITTED so the
-                        // transaction is now done.
+                        // Prepare must have returned COMMITTED or was READ-ONLY
+                        // so the transaction is now done.
                         ramcloud->rpcTracker->rpcFinished(txId);
                         state = DONE;
                         TEST_LOG("Move from PREPARE to DONE phase; optimized.");
@@ -741,7 +745,8 @@ ClientTransactionTask::PrepareRpc::appendOp(CommitCacheMap::iterator opEntry)
         case CacheEntry::READ:
             request.emplaceAppend<WireFormat::TxPrepare::Request::ReadOp>(
                     key->tableId, entry->rpcId,
-                    entry->objectBuf->getKeyLength(), entry->rejectRules);
+                    entry->objectBuf->getKeyLength(), entry->rejectRules,
+                    task->readOnly);
             request.appendExternal(entry->objectBuf->getKey(),
                     entry->objectBuf->getKeyLength());
             break;

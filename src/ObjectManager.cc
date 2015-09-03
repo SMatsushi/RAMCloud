@@ -229,6 +229,10 @@ ObjectManager::readHashes(const uint64_t tableId, uint32_t reqNumHashes,
                 tabletManager->incrementReadCount(object.getTableId(),
                         object.getPKHash());
                 ++PerfStats::threadStats.readCount;
+                uint32_t valueLength = object.getValueLength();
+                PerfStats::threadStats.readObjectBytes += valueLength;
+                PerfStats::threadStats.readKeyBytes +=
+                        object.getKeysAndValueLength() - valueLength;
             }
         }
 
@@ -329,13 +333,17 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
 
     Object object(buffer);
     if (valueOnly) {
-        uint16_t valueOffset = 0;
+        uint32_t valueOffset = 0;
         object.getValueOffset(&valueOffset);
         object.appendValueToBuffer(outBuffer, valueOffset);
     } else {
         object.appendKeysAndValueToBuffer(*outBuffer);
     }
     ++PerfStats::threadStats.readCount;
+    uint32_t valueLength = object.getValueLength();
+    PerfStats::threadStats.readObjectBytes += valueLength;
+    PerfStats::threadStats.readKeyBytes +=
+            object.getKeysAndValueLength() - valueLength;
 
     return STATUS_OK;
 }
@@ -1236,6 +1244,10 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
 
     tabletManager->incrementWriteCount(key);
     ++PerfStats::threadStats.writeCount;
+    uint32_t valueLength = newObject.getValueLength();
+    PerfStats::threadStats.writeObjectBytes += valueLength;
+    PerfStats::threadStats.writeKeyBytes +=
+            newObject.getKeysAndValueLength() - valueLength;
 
     TEST_LOG("object: %u bytes, version %lu",
         appends[0].buffer.size(), newObject.getVersion());
@@ -1463,7 +1475,6 @@ ObjectManager::prepareOp(PreparedOp& newOp, RejectRules* rejectRules,
     *rpcResultPtr = appends[rpcResultIndex].reference.toInteger();
 
     //tabletManager->incrementWriteCount(key);
-    ++PerfStats::threadStats.writeCount;
 
     TEST_LOG("preparedOp: %u bytes", appends[0].buffer.size());
     TEST_LOG("rpcResult: %u bytes", appends[rpcResultIndex].buffer.size());
@@ -1479,6 +1490,105 @@ ObjectManager::prepareOp(PreparedOp& newOp, RejectRules* rejectRules,
                               recordCount);
     }
 
+    *isCommitVote = true;
+    return STATUS_OK;
+}
+
+/**
+ * Process prepare request for ReadOnly operation.
+ * It just checks the lock of the corresponding object and compares version
+ * (by rejectRules). It writes no data on the log.
+ *
+ * \param newOp
+ *      The preparedOperation to be written to the log. It does not have
+ *      a valid version and timestamp. So this function will update the version,
+ *      timestamp and the checksum of the object before writing to the log.
+ * \param rejectRules
+ *      Specifies conditions under which the prepare should be aborted with an
+ *      error. May be NULL if no special reject conditions are desired.
+ *
+ * \param[out] isCommitVote
+ *      Vote result after prepare is returned.
+ * \return
+ *      STATUS_OK if we can decide commit-vote or abort-vote.
+ *      STATUS_UNKNOWN_TABLE may be returned.
+ */
+Status
+ObjectManager::prepareReadOnly(PreparedOp& newOp, RejectRules* rejectRules,
+                bool* isCommitVote)
+{
+    *isCommitVote = false;
+    if (!anyWrites) {
+        // This is the first write; use this as a trigger to update the
+        // cluster configuration information and open a session with each
+        // backup, so it won't slow down recovery benchmarks.  This is a
+        // temporary hack, and needs to be replaced with a more robust
+        // approach to updating cluster configuration information.
+        anyWrites = true;
+
+        // Empty coordinator locator means we're in test mode, so skip this.
+        if (!context->coordinatorSession->getLocation().empty()) {
+            ProtoBuf::ServerList backups;
+            CoordinatorClient::getBackupList(context, &backups);
+            TransportManager& transportManager =
+                *context->transportManager;
+            foreach(auto& backup, backups.server())
+                transportManager.getSession(backup.service_locator());
+        }
+    }
+
+    uint16_t keyLength = 0;
+    const void *keyString = newOp.object.getKey(0, &keyLength);
+    Key key(newOp.object.getTableId(), keyString, keyLength);
+
+    objectMap.prefetchBucket(key.getHash());
+    HashTableBucketLock lock(*this, key);
+
+    // If the tablet doesn't exist in the NORMAL state, we must plead ignorance.
+    TabletManager::Tablet tablet;
+    if (!tabletManager->getTablet(key, &tablet))
+        return STATUS_UNKNOWN_TABLET;
+    if (tablet.state != TabletManager::NORMAL)
+        return STATUS_UNKNOWN_TABLET;
+
+    // If the key is already locked, abort.
+    if (lockTable.isLockAcquired(key)) {
+        RAMCLOUD_LOG(DEBUG,
+                "TxPrepare(readOnly) fail. Key: %.*s, object is already locked",
+                keyLength, reinterpret_cast<const char*>(keyString));
+        return STATUS_OK;
+    }
+
+    LogEntryType currentType = LOG_ENTRY_TYPE_INVALID;
+    Buffer currentBuffer;
+    Log::Reference currentReference;
+    uint64_t currentVersion = VERSION_NONEXISTENT;
+
+    HashTable::Candidates currentHashTableEntry;
+
+    if (lookup(lock, key, currentType, currentBuffer, 0,
+               &currentReference, &currentHashTableEntry)) {
+        if (currentType == LOG_ENTRY_TYPE_OBJTOMB) {
+            removeIfTombstone(currentReference.toInteger(), this);
+        } else {
+            Object currentObject(currentBuffer);
+            currentVersion = currentObject.getVersion();
+        }
+    }
+
+    if (rejectRules != NULL) {
+        Status status = rejectOperation(rejectRules, currentVersion);
+        if (status != STATUS_OK) {
+            RAMCLOUD_LOG(DEBUG, "TxPrepare(readOnly) fail. Type: %d Key: %.*s, "
+                "RejectRule outcome: %s rejectRule.givenVersion %lu "
+                "currentVersion %lu",
+                    newOp.header.type,
+                    keyLength, reinterpret_cast<const char*>(keyString),
+                    statusToString(status),
+                    rejectRules->givenVersion, currentVersion);
+            return STATUS_OK;
+        }
+    }
     *isCommitVote = true;
     return STATUS_OK;
 }
@@ -1825,6 +1935,11 @@ ObjectManager::commitWrite(PreparedOp& op,
                           prepOpTombstone.header.tableId,
                           byteCount,
                           recordCount);
+    ++PerfStats::threadStats.writeCount;
+    uint32_t valueLength = op.object.getValueLength();
+    PerfStats::threadStats.writeObjectBytes += valueLength;
+    PerfStats::threadStats.writeKeyBytes +=
+            op.object.getKeysAndValueLength() - valueLength;
 
     log.free(refToPreparedOp);
 
@@ -2067,7 +2182,7 @@ ObjectManager::prepareForLog(Object& newObject, Buffer *logBuffer,
 
     uint32_t objectOffset = 0;
     uint32_t lengthBefore = logBuffer->size();
-    uint16_t valueOffset = 0;
+    uint32_t valueOffset = 0;
 
     newObject.getValueOffset(&valueOffset);
     objectOffset = lengthBefore + sizeof32(Object::Header) + valueOffset;

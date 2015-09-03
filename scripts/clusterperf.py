@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) 2011-2014 Stanford University
+# Copyright (c) 2011-2015 Stanford University
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -211,10 +211,14 @@ def run_test(
         client_args['--workload'] = options.workload
     if options.targetOps != None:
         client_args['--targetOps'] = options.targetOps
+    if options.txSpan != None:
+        client_args['--txSpan'] = options.txSpan
     if options.numIndexlet != None:
         client_args['--numIndexlet'] = options.numIndexlet
     if options.numIndexes != None:
         client_args['--numIndexes'] = options.numIndexes
+    if options.numVClients != None:
+        client_args['--numVClients'] = options.numVClients
     test.function(test.name, options, cluster_args, client_args)
 
 #-------------------------------------------------------------------
@@ -409,7 +413,6 @@ def indexReadDist(name, options, cluster_args, client_args):
 def transactionDist(name, options, cluster_args, client_args):
     if 'master_args' not in cluster_args:
         cluster_args['master_args'] = '-t 2000'
-    cluster_args['disjunct'] = True
     if options.numTables == None:
         client_args['--numTables'] = 1
     cluster.run(client='%s/ClusterPerf %s %s' %
@@ -729,10 +732,16 @@ if __name__ == '__main__':
     parser.add_option('--targetOps', type=int,
             help='Operations per second that each load generating client '
             'will try to achieve')
+    parser.add_option('--txSpan', type=int,
+                    help='Number servers a transaction should span.')
     parser.add_option('-i', '--numIndexlet', type=int,
             help='Number of indexlets for measuring index scalability ')
     parser.add_option('-k', '--numIndexes', type=int,
             help='Number of secondary keys/object to measure index operations')
+    parser.add_option('--numVClients', type=int,
+            metavar='N', dest='numVClients',
+            help='Number of virtual clients each client instance should '
+                 'simulate')
     parser.add_option('--rcdf', action='store_true', default=False,
             dest='rcdf',
             help='Output reverse CDF data instead.')

@@ -46,13 +46,14 @@ FastTransport::FastTransport(Context* context, Driver* driver)
     , clientRpcPool()
 {
     struct IncomingPacketHandler : Driver::IncomingPacketHandler {
-        explicit IncomingPacketHandler(FastTransport& t) : t(t) {}
-        void operator()(Driver::Received* received) {
-            t.handleIncomingPacket(received);
+        explicit IncomingPacketHandler(FastTransport* t) : t(t) {}
+        void handlePacket(Driver::Received* received) {
+            t->handleIncomingPacket(received);
         }
-        FastTransport& t;
+        FastTransport* t;
+        DISALLOW_COPY_AND_ASSIGN(IncomingPacketHandler);
     };
-    driver->connect(new IncomingPacketHandler(*this));
+    driver->connect(new IncomingPacketHandler(this));
 }
 
 FastTransport::~FastTransport()
@@ -179,8 +180,8 @@ void FastTransport::handleIncomingPacket(Driver::Received* received)
     Header* header = received->getOffset<Header>(0);
     if (header == NULL) {
         LOG(WARNING,
-            "packet too short (%u bytes)",
-            received->len);
+            "packet from %s too short (%u bytes)",
+            received->sender->toString().c_str(), received->len);
         return;
     }
     if (header->pleaseDrop) {
@@ -202,7 +203,9 @@ void FastTransport::handleIncomingPacket(Driver::Received* received)
                 session->startSession(received->sender,
                                       header->clientSessionHint);
             } else {
-                LOG(WARNING, "bad session hint %d", header->serverSessionHint);
+                LOG(WARNING, "bad session hint %d from %s",
+                        header->serverSessionHint,
+                        received->sender->toString().c_str());
                 sendBadSessionError(header, received->sender);
             }
             return;
@@ -239,8 +242,9 @@ void FastTransport::handleIncomingPacket(Driver::Received* received)
                     header->sessionToken);
             }
         } else {
-            LOG(WARNING, "bad client session hint %d",
-                header->clientSessionHint);
+            LOG(WARNING, "bad client session hint %d from %s",
+                header->clientSessionHint,
+                received->sender->toString().c_str());
         }
     }
 }
@@ -389,7 +393,7 @@ FastTransport::InboundMessage::setup(FastTransport* transport,
 }
 
 /**
- * Creates and transmits an ACK decribing which fragments are still missing.
+ * Creates and transmits an ACK describing which fragments are still missing.
  */
 void
 FastTransport::InboundMessage::sendAck()
