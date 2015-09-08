@@ -1,4 +1,5 @@
 /* Copyright (c) 2011-2015 Stanford University
+ * Copyright (c) 2015 NEC Corporation
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -149,6 +150,15 @@ Dispatch::poll()
         pollingTimes[nextInd] = currentTime - previous;
         nextInd = (nextInd + 1) % totalElements;
     }
+#if defined(WORKAROUND_CYCLES)
+    // for the moment, add workaroud code to getCyclesPerSec(). see Cycles.h.
+    // This workaround is not needed but harmless.
+
+    // Temporary workaround: sometimes, slowPollerCycles becomes 0.
+    if (slowPollerCycles == 0) {
+      slowPollerCycles = Cycles::fromSeconds(.05);
+    }
+#endif
     if (((currentTime - previous) > slowPollerCycles) && hasDedicatedThread) {
         LOG(WARNING, "Long gap in dispatcher: %.1f ms",
                 Cycles::toSeconds(currentTime - previous)*1e03);

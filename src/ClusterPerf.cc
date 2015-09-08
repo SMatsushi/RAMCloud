@@ -1,5 +1,6 @@
 /* Copyright (c) 2011-2014 Stanford University
  * Copyright (c) 2011 Facebook
+ * Copyright (c) 2015 NEC Corporation
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -39,6 +40,9 @@
 //  4. Add code for this test to clusterperf.py, following the instructions
 //     in that file.
 
+#if defined(TIME_ATTACK)
+#include <limits.h>
+#endif
 #include <boost/program_options.hpp>
 #include <boost/version.hpp>
 #include <iostream>
@@ -163,6 +167,17 @@ extern void readThroughputMaster(int numObjects, int size, uint16_t keyLength);
  */
 string formatTime(double seconds)
 {
+#if defined(TIME_ATTACK)
+    if (seconds < 1.0e-06) {
+        return format("%7.3f ns", 1e09*seconds);
+    } else if (seconds < 1.0e-03) {
+        return format("%7.3f us", 1e06*seconds);
+    } else if (seconds < 1.0) {
+        return format("%7.3f ms", 1e03*seconds);
+    } else {
+        return format("%7.3f s ", seconds);
+    }
+#else
     if (seconds < 1.0e-06) {
         return format("%5.1f ns", 1e09*seconds);
     } else if (seconds < 1.0e-03) {
@@ -172,6 +187,7 @@ string formatTime(double seconds)
     } else {
         return format("%5.1f s ", seconds);
     }
+#endif
 }
 
 /**
@@ -516,6 +532,17 @@ void
 printTime(const char* name, double seconds, const char* description)
 {
     printf("%-20s ", name);
+#if defined(TIME_ATTACK)
+    if (seconds < 1.0e-06) {
+        printf("%7.3f ns   ", 1e09*seconds);
+    } else if (seconds < 1.0e-03) {
+        printf("%7.3f us   ", 1e06*seconds);
+    } else if (seconds < 1.0) {
+        printf("%7.3f ms   ", 1e03*seconds);
+    } else {
+        printf("%7.3f s    ", seconds);
+    }
+#else
     if (seconds < 1.0e-06) {
         printf("%5.1f ns   ", 1e09*seconds);
     } else if (seconds < 1.0e-03) {
@@ -525,6 +552,7 @@ printTime(const char* name, double seconds, const char* description)
     } else {
         printf("%5.1f s    ", seconds);
     }
+#endif
     printf("  %s\n", description);
 }
 
@@ -923,16 +951,33 @@ timeRead(uint64_t tableId, const void* key, uint16_t keyLength,
     uint64_t start = Cycles::rdtsc();
     uint64_t elapsed;
     int count = 0;
+#if defined(TIME_ATTACK)
+    uint64_t tsc1, tsc2;
+    uint64_t fastest = ULLONG_MAX;
+#endif
     while (true) {
         for (int i = 0; i < 10; i++) {
+#if defined(TIME_ATTACK)
+            tsc1 = Cycles::rdtsc();
+#endif
             cluster->read(tableId, key, keyLength, &value);
+#if defined(TIME_ATTACK)
+            tsc2 = Cycles::rdtsc();
+            if ((tsc2 - tsc1) < fastest) {
+                fastest = tsc2 - tsc1;
+            }
+#endif
         }
         count += 10;
         elapsed = Cycles::rdtsc() - start;
         if (elapsed >= runCycles)
             break;
     }
+#if defined(TIME_ATTACK)
+    return Cycles::toSeconds(fastest);
+#else
     return Cycles::toSeconds(elapsed)/count;
+#endif
 }
 
 /**

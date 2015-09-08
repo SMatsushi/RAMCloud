@@ -4,6 +4,63 @@
 #       Recursive Make Considered Harmful
 #       http://aegis.sourceforge.net/auug97.pdf
 
+# --- private/MakefragPrivateTop for dpdk
+GCC44 := /usr/bin/gcc44
+GXX44 := /usr/bin/g++44
+GCC   := /usr/bin/gcc
+GXX   := /usr/bin/g++
+
+DEBUG    ?= no
+COMPILER ?= gnu
+
+## configurable parameters:
+# DpdkDriver
+DPDK        ?= yes
+
+ifeq ($(DPDK),yes)
+
+ifeq ($(DEBUG),yes)
+TIME_ATTACK := no
+else
+# ClusterPerf time attack mode. display fastest lap instead of average time
+TIME_ATTACK ?= yes
+endif
+
+WORKAROUND_THREAD := yes
+WORKAROUND_CYCLES := yes
+
+else
+TIME_ATTACK       := no
+WORKAROUND_THREAD := no
+WORKAROUND_CYCLES := no
+endif
+
+ifeq ($(COMPILER),gnu)
+
+# use gcc44, g++44 if available.
+# On CentOS7, install compat-gcc-44 and compat-gcc-44-c++ packages.
+CC  := $(shell test -x $(GCC44) && echo $(GCC44) || echo $(GCC))
+CXX := $(shell test -x $(GXX44) && echo $(GXX44) || echo $(GXX))
+
+$(info CC  = $(CC) $(shell $(CC) -dumpversion))
+$(info CXX = $(CXX) $(shell $(CXX) -dumpversion))
+
+GCC_MAJOR_VERSION = $(shell $(CC) -dumpversion | cut -f1 -d.)
+GCC_MINOR_VERSION = $(shell $(CC) -dumpversion | cut -f2 -d.)
+
+ifeq ($(shell test $(GCC_MAJOR_VERSION) -lt 4 && echo 1),1)
+$(error GCC 4 or later required)
+endif
+
+ifeq ($(shell test $(GCC_MINOR_VERSION) -ge 6 && echo 1), 1)
+# corei7 support added since gcc-4.6.x
+ARCH ?= corei7
+else
+ARCH ?= atom
+endif
+TUNE ?= $(ARCH)
+endif
+# --- private/MakefragPrivateTop for dpdk - end
 
 # The following line allows developers to change the default values for make
 # variables in the file private/MakefragPrivateTop.
@@ -146,6 +203,57 @@ COMFLAGS += -DINFINIBAND
 LIBS += -libverbs
 endif
 
+# DPDK
+ifeq ($(DPDK),yes)
+RTE_TARGET  ?= x86_64-native-linuxapp-gcc
+COMFLAGS    += -DDPDK
+
+ifeq ($(RTE_SDK),)
+# link with the libraries installed on the system
+ifeq ($(DPDK_SHARED),no)
+$(error DPDK_SHARED should be yes when linking libraries installed on the system)
+endif
+DPDK_SHARED := yes
+
+else
+# link with the libraries in the dpdk sdk under RTE_SDK
+ifeq ($(wildcard $(RTE_SDK)),)
+$(error RTE_SDK variable points to an invalid location)
+endif
+ifeq ($(wildcard $(RTE_SDK)/$(RTE_TARGET)),)
+$(error $(RTE_SDK)/$(RTE_TARGET) not found. build and install the DPDK SDK first.)
+endif
+
+DPDK_SHARED ?= no
+RTE_INCDIR := $(RTE_SDK)/$(RTE_TARGET)/include
+RTE_LIBDIR := $(RTE_SDK)/$(RTE_TARGET)/lib
+COMFLAGS   += -I$(RTE_INCDIR)
+LIBS       += -L$(RTE_LIBDIR)
+
+# end of RTE_SDK
+endif
+
+ifeq ($(DPDK_SHARED),yes)
+# link with the shared libraries
+## dpdk shared libraries.
+RTE_SHLIBS := -lethdev -lrte_mbuf -lrte_malloc -lrte_mempool
+RTE_SHLIBS += -lrte_ring -lrte_kvargs -lrte_eal
+## poll mode drivers, depends on dpdk configuration.
+RTE_SHLIBS += -lrte_pmd_e1000 -lrte_pmd_ixgbe
+RTE_SHLIBS += -lrte_pmd_virtio_uio -lrte_pmd_ring
+## -ldl required because librte_eal refers to dlopen()
+LIBS += $(RTE_SHLIBS) -ldl
+else
+# link with the static link library
+## assume dpdk sdk is build with CONFIG_RTE_BUILD_COMBINE_LIBS=y and -fPIC
+RTE_ARLIBS := $(RTE_LIBDIR)/libintel_dpdk.a
+## --whole-archive is required to link the pmd objects.
+LIBS += -Wl,--whole-archive $(RTE_ARLIBS) -Wl,--no-whole-archive -ldl
+endif
+
+# end of DPDK
+endif
+
 ifeq ($(YIELD),yes)
 COMFLAGS += -DYIELD=1
 endif
@@ -227,6 +335,39 @@ include src/MakefragTest
 include src/misc/Makefrag
 include bindings/python/Makefrag
 
+# --- private/MakefragPrivate for dpdk
+ifeq ($(COMPILER),gnu)
+ifeq ($(shell test $(GCC_MINOR_VERSION) -ge 8 && echo 1), 1)
+# tentatively accept the warnings to build with gcc-4.8 or later
+CFLAGS   := $(filter-out -Werror, $(CFLAGS))
+CXXFLAGS := $(filter-out -Werror, $(CXXFLAGS))
+endif
+endif
+
+ifneq ($(ARCH),)
+CFLAGS   := $(filter-out -march=core2, $(CFLAGS))   -march=$(ARCH)
+CXXFLAGS := $(filter-out -march=core2, $(CXXFLAGS)) -march=$(ARCH)
+endif
+ifneq ($(TUNE),)
+CFLAGS   += -mtune=$(TUNE)
+CXXFLAGS += -mtune=$(TUNE)
+endif
+
+ifeq ($(TIME_ATTACK),yes)
+CFLAGS   += -DTIME_ATTACK
+CXXFLAGS += -DTIME_ATTACK
+endif
+
+ifeq ($(WORKAROUND_THREAD),yes)
+CFLAGS   += -DWORKAROUND_THREAD
+CXXFLAGS += -DWORKAROUND_THREAD
+endif
+ifeq ($(WORKAROUND_CYCLES),yes)
+CFLAGS   += -DWORKAROUND_CYCLES
+CXXFLAGS += -DWORKAROUND_CYCLES
+endif
+# --- private/MakefragPrivate for dpdk - end
+
 # The following line allows developers to create private make rules
 # in the file private/MakefragPrivate.  The recommended approach is
 # for you to keep all private files (personal development hacks,
@@ -281,7 +422,7 @@ print-%:
 java: $(OBJDIR)/libramcloud.a
 	cd bindings/java; ./gradlew build
 java-clean:
-	cd bindings/java; ./gradlew clean
+	-cd bindings/java; ./gradlew clean
 
 INSTALL_BINS := \
     $(OBJDIR)/client \

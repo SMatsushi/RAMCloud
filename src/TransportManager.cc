@@ -1,5 +1,6 @@
 /* Copyright (c) 2010-2012 Stanford University
  * Copyright (c) 2011 Facebook
+ * Copyright (c) 2014-2015 NEC Corporation
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -33,6 +34,10 @@
 
 #ifdef ONLOAD
 #include "SolarFlareDriver.h"
+#endif
+
+#ifdef DPDK
+#include "DpdkDriver.h"
 #endif
 
 namespace RAMCloud {
@@ -99,6 +104,18 @@ static struct InfRcTransportFactory : public TransportFactory {
 } infRcTransportFactory;
 #endif
 
+#ifdef DPDK
+static struct FastDpdkTransportFactory : public TransportFactory {
+    FastDpdkTransportFactory()
+        : TransportFactory("fast+dpdk", "fast+dpdk") {}
+    Transport* createTransport(Context* context,
+            const ServiceLocator* localServiceLocator) {
+        return new FastTransport(context,
+                new DpdkDriver(context, localServiceLocator));
+    }
+} fastDpdkTransportFactory;
+#endif
+
 TransportManager::TransportManager(Context* context)
     : context(context)
     , isServer(false)
@@ -121,6 +138,9 @@ TransportManager::TransportManager(Context* context)
     transportFactories.push_back(&fastInfUdTransportFactory);
     transportFactories.push_back(&fastInfEthTransportFactory);
     transportFactories.push_back(&infRcTransportFactory);
+#endif
+#ifdef DPDK
+    transportFactories.push_back(&fastDpdkTransportFactory);
 #endif
     transports.resize(transportFactories.size(), NULL);
 }

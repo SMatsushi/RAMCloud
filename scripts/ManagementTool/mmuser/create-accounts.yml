@@ -1,0 +1,35 @@
+# create user accounts on ramcloud cluster hosts
+---
+- hosts:
+    - ramcloud
+  sudo: yes
+  gather_facts: no
+  vars_files:
+    - "{{ data }}"
+  vars:
+
+  tasks:
+#    - debug: msg={{ accounts[0].name }}
+#      tags:
+#        - debug
+
+    - name: remove existing users on cluster hosts
+      user: state=absent remove=no force=no name={{ item.name }}
+      with_items: accounts
+      tags:
+       - remove
+
+    - name: create usergroups on cluster hosts
+      group: name={{ item.name }} gid={{ item.gid }} state=present
+      with_items: accounts
+      tags:
+       - create
+
+    - name: create users on cluster hosts
+      user: state=present createhome=no
+            name={{ item.name }} uid={{ item.uid }} group={{ item.name }}
+            comment="{{ item.gecos }}" groups={{ item.groups }}
+            shell="{{ item.shell }}" home={{ item.home }}
+      with_items: accounts
+      tags:
+       - create

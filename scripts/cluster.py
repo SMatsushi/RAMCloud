@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 # Copyright (c) 2010-2014 Stanford University
+# Copyright (c) 2014-2015 NEC Corporation
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -46,6 +47,7 @@ valgrind_command = ''
 server_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
     'tcp-1g': 'tcp:host=%(host1g)s,port=%(port)d',
+    'fast+dpdk': 'fast+dpdk:mac=%(mac)s',
     'fast+udp': 'fast+udp:host=%(host)s,port=%(port)d',
     'fast+udp-1g': 'fast+udp:host=%(host1g)s,port=%(port)d',
     'unreliable+udp': 'unreliable+udp:host=%(host)s,port=%(port)d',
@@ -86,9 +88,12 @@ def server_locator(transport, host, port=server_port):
     @return: A service locator.
     @rtype: C{str}
     """
+    if transport == 'tcp':
+       transport = 'fast+dpdk'
     locator = (server_locator_templates[transport] %
                {'host': host[1],
                 'host1g': host[0],
+                'mac': host[3],
                 'port': port,
                 'id': host[2]})
     return locator
@@ -629,7 +634,11 @@ def run(
         cluster.hosts = getHosts()
 
         if not coordinator_host:
-            coordinator_host = cluster.hosts[len(cluster.hosts)-1]
+# Workaround:
+# coordinator and client are assigned to the same host
+# even if the --disjunct option is passed to clusterperf.py.
+#            coordinator_host = cluster.hosts[len(cluster.hosts)-1]
+            coordinator_host = cluster.hosts[0]
         coordinator = cluster.start_coordinator(coordinator_host,
                                                 coordinator_args)
         if disjunct:

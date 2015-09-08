@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 # Copyright (c) 2011-2014 Stanford University
+# Copyright (c) 2014-2015 NEC Corporation
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -670,14 +671,14 @@ if __name__ == '__main__':
             'are used by all benchmarks.',
             usage='%prog [options] test test ...',
             conflict_handler='resolve')
-    parser.add_option('-n', '--clients', type=int,
+    parser.add_option('-n', '--clients', type=int, default=1,
             metavar='N', dest='num_clients',
             help='Number of instances of the client application '
                  'to run')
     parser.add_option('-c', '--count', type=int,
             metavar='N', dest='count',
             help='Number of times to perform the operation')
-    parser.add_option('--disjunct', action='store_true', default=False,
+    parser.add_option('--disjunct', action='store_true', default=True,
             metavar='True/False',
             help='Do not colocate clients on a node (servers are never '
                   'colocated, regardless of this option)')
@@ -699,7 +700,7 @@ if __name__ == '__main__':
     parser.add_option('-r', '--replicas', type=int, default=3,
             metavar='N',
             help='Number of disk backup copies for each segment')
-    parser.add_option('--servers', type=int,
+    parser.add_option('--servers', type=int, default=4,
             metavar='N', dest='num_servers',
             help='Number of hosts on which to run servers')
     parser.add_option('-s', '--size', type=int, default=100,
@@ -716,7 +717,7 @@ if __name__ == '__main__':
             dest='master_args',
             help='Additional command-line arguments to pass to '
                  'each master')
-    parser.add_option('-T', '--transport', default='infrc',
+    parser.add_option('-T', '--transport', default='tcp',
             help='Transport to use for communication with servers')
     parser.add_option('-v', '--verbose', action='store_true', default=False,
             help='Print progress messages')

@@ -18,6 +18,14 @@ else
 SOLARFLARE_SRC :=
 endif
 
+ifeq ($(DPDK),yes)
+DPDK_SRCFILES := \
+	src/DpdkDriverTest.cc \
+	$(NULL)
+else
+DPDK_SRCFILES :=
+endif
+
 TESTS_SRCFILES := \
       src/btreeRamCloud/BtreeTest.cc \
 		  src/AbstractLogTest.cc \
@@ -175,6 +183,7 @@ TESTS_SRCFILES := \
 		  src/RamCloudTest.cc \
 		  $(INFINIBAND_SRCFILES) \
 		  $(SOLARFLARE_SRC) \
+		  $(DPDK_SRCFILES) \
 		  $(OBJDIR)/ProtoBufTest.pb.cc
 
 TESTS_OBJFILES := $(TESTS_SRCFILES)

@@ -1,4 +1,5 @@
 /* Copyright (c) 2011-2015 Stanford University
+ * Copyright (c) 2014-2015 NEC Corporation
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -325,6 +326,23 @@ ServiceManager::waitForRpc(double timeoutSeconds) {
     }
 }
 
+#if defined(WORKAROUND_THREAD)
+// Workaround of the problem that clusterperf basic hangs.
+
+static int cpuno = 0;
+void bindThreadToCpu(int cpu)
+{
+    cpu_set_t set;
+    CPU_ZERO(&set);
+
+    for (int i = 1; i < 8; i++)
+      CPU_SET(i, &set);
+    // multi threads best affinity is cpu no 1
+    // CPU_SET(1, &set);
+    sched_setaffinity((pid_t)syscall(SYS_gettid), sizeof(set), &set);
+}
+#endif // WORKAROUND_THREAD
+
 /**
  * This is the top-level method for worker threads.  It repeatedly waits for
  * an RPC to be assigned to it, then executes that RPC and communicates its
@@ -338,6 +356,14 @@ void
 ServiceManager::workerMain(Worker* worker)
 {
     PerfStats::registerStats(&PerfStats::threadStats);
+
+#if defined(WORKAROUND_THREAD)
+// Workaround of the problem that clusterperf basic hangs.
+    // All Cpuset
+    bindThreadToCpu(1 + (cpuno++ %
+                         static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN)-1)));
+    // REVISIT: the number of online cpus may not be continuous.
+#endif
 
     // Cycles::rdtsc time that's updated continuously when this thread is idle.
     // Used to keep track of how much time this thread spends doing useful

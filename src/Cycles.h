@@ -1,4 +1,5 @@
 /* Copyright (c) 2011-2014 Stanford University
+ * Copyright (c) 2015 NEC Corporation
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -97,6 +98,17 @@ class Cycles {
         if (mockCyclesPerSec != 0.0) {
             return mockCyclesPerSec;
         }
+#endif
+#if defined(WORKAROUND_CYCLES)
+        // Workaround:
+        // at times, getCyclesPerSec() is called when cyclesPerSec == 0.
+        // Cycles::init() should be called via Initialize class before main()
+        // is invoked, therefore getCyclesPerSec() should not be invoked with
+        // the situation cyclesPerSec == 0.
+        if (cyclesPerSec == 0)
+            init();
+        // REVISIT: if an Cyces object's init() is invoked from multiple
+        // threads concurrently, cyclesPerSec may be corrupted.
 #endif
         return cyclesPerSec;
     }

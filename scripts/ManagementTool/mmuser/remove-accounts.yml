@@ -1,0 +1,11 @@
+---
+# create a user account on the atom hosts
+- hosts:
+    - ramcloud
+  sudo: yes
+  gather_facts: no
+  tasks:
+    - name: remove a user on the atom hosts
+      user: name={{ user }} state=absent remove=no
+      tags:
+       - remove
