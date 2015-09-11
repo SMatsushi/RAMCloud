@@ -10,7 +10,7 @@ GXX44 := /usr/bin/g++44
 GCC   := /usr/bin/gcc
 GXX   := /usr/bin/g++
 
-DEBUG    ?= no
+DEBUG    ?= yes
 COMPILER ?= gnu
 
 ## configurable parameters:
