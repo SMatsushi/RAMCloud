@@ -352,7 +352,7 @@ try
     // client.ping();
 
     LOG(NOTICE, "- quiescing writes");
-    client.quiesce();
+    client.serverControlAll(WireFormat::ControlOp::QUIESCE);
 
     // Take an initial snapshot of performance metrics.
     ClusterMetrics metricsBefore(&client);
@@ -458,6 +458,7 @@ try
                     metricIt->second);
         }
     }
+    client.serverControlAll(WireFormat::ControlOp::QUIESCE);
 
     return 0;
 } catch (RAMCloud::ClientException& e) {
