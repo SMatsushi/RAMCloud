@@ -15,7 +15,7 @@ COMPILER ?= gnu
 
 ## configurable parameters:
 # DpdkDriver
-DPDK        ?= yes
+DPDK        ?= no
 
 ifeq ($(DPDK),yes)
 
