@@ -20,7 +20,11 @@ Arguments:
   <time>        Lease expiration time (ex: 6pm, 6:00pm, 18:00, 24h, 1d).
   <server_ids>  List of server ids to lease or lock; (ex: atom1-132, atom10, mmatom).
   <ids>         List of ids to unlock; can be servers, users, or lockgroups.
-  <cluster>     Name of cluster whoes status will be printed (ex: atom)
+  <cluster>     Name of cluster whoes status will be printed, default is 'atom'
+                 ex: atom
+                     atom1-10 : only print atom1-10
+                     1-10 : same as atom1-10 
+                     misc
 
 Options:
   -h --help              Show this help message and exit.
@@ -43,14 +47,17 @@ from subprocess import call
 from lockfile import LockFile
 import time
 import os
+import maxNode
 
 RESFILE = '/usr/local/mmres/db/activeLeaseDB'
 ADMINLIST = ['matsushi', 'satoshi', 'neskobe', 'behnamm', 'admin']
 
+MAXNODE = maxNode.node  # defined in maxNode.py which is set by system
 CANONFORMAT = {}
 SERVERS = {}
+DEFAULTCLUSTER = 'atom'
 CANONFORMAT['atom'] = "atom%03d"
-SERVERS['atom'] = tuple([CANONFORMAT['atom'] % i for i in range(1,133)])
+SERVERS['atom'] = tuple([CANONFORMAT['atom'] % i for i in range(1,MAXNODE+1)])
 SERVERS['misc'] = tuple(['mmatom'])
 
 STATUS = {}
@@ -78,7 +85,14 @@ def flushResFile():
         print("ERROR: Unable to persist request.")
 
 def printCompactStatus(cluster):
-    serverList = SERVERS[cluster]
+    m = re.compile('^(\D*)(\d+)-(\d+)$').match(cluster)
+    if m:
+        if not m.group(1):
+            cluster = DEFAULTCLUSTER + cluster
+        # print("cluster=%s" % cluster)
+        serverList = parseServerIds(cluster)
+    else:
+        serverList = SERVERS[cluster]
     idlen = max([len(str(s)) for s in serverList])
     formatString = "%d" % idlen
     formatString = "  %" + formatString + "s[ %s ]  "
@@ -103,7 +117,16 @@ def printCompactStatus(cluster):
         print(line)
 
 def printListStatus(cluster):
-    serverList = SERVERS[cluster]
+    if cluster:
+        m = re.compile('^(\D*)(\d+)-(\d+)$').match(cluster)
+        if m:
+            if not m.group(1):
+                cluster = DEFAULTCLUSTER + cluster
+            serverList = parseServerIds(cluster)
+        else:
+            serverList = SERVERS[cluster]
+    else:
+        serverList = SERVERS[cluster]
     idlen = max([len(str(s)) for s in serverList])
     formatString = "%d" % idlen
     formatString = "%10s  %" + formatString + "s  [%16.16s]  %s"
@@ -127,20 +150,25 @@ def printStatus(cluster, listMode):
         
 def status(listMode, cluster):
     printed = False
-    
+    cbody = False
     if cluster:
         cluster = cluster.lower()
-    
-    if not cluster or cluster == "atom":
-        # MMRX Machines
+        cbody = cluster
+        m = re.compile('^(\D*)(\d+)-(\d+)$').match(cluster)
+        if m:
+             cbody = m.group(1)
+    if not cbody or cbody == "atom":
+        # atomXXX Machines
         print("atomXXX Machines:")
         print("==============")
-        printStatus("atom", listMode)
+        if not cluster:
+            cluster = "atom"
+        printStatus(cluster, listMode)
         print("")
         printed = True
     
-    if not cluster or cluster == "misc":
-        # MISC Machines
+    if not cbody or cbody == "misc":
+        # misc machines
         print("MISC Machines:")
         print("==============")
         printStatus("misc", listMode)
@@ -219,6 +247,10 @@ def parseServerIds(serverIds):
         numbers = splitter.split(serverIds)
         first = min(int(numbers[1]), int(numbers[2]))
         last = max(int(numbers[1]), int(numbers[2]))
+        if last > MAXNODE:
+            print("Warning: Last node %d exceeds %d, using %d" % 
+                    (last, MAXNODE, MAXNODE))
+            last = MAXNODE
         for i in range(first, last+1):
             serverIdList.append("%s%d" % (prefix, i))
     else:

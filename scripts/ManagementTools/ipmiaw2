@@ -1,0 +1,137 @@
+#!/usr/bin/python
+
+# PARAMETERS
+ipmiUserFilePath = "~/.atom/ipmi_user.txt"
+ipmiPasswordFilePath = "$HOME/.atom/ipmi_password.txt"
+defaultIpmiSubnet = "192.168.5"
+
+import os
+import sys
+import re
+
+ipmiUserFilePath = os.path.expanduser(ipmiUserFilePath)
+f = open(ipmiUserFilePath)
+ipmiUser = f.readline().rstrip()
+ipmitoolArgs = "-I lanplus -U %s -f %s" % (ipmiUser, ipmiPasswordFilePath)
+
+if len(sys.argv) < 3:
+        print ""
+        print "IPMItool wrapper for ATOM server"
+        print ""
+        print "usage:"
+	print " Hostname base "
+        print "       %s atom001m-atom003m" % (sys.argv[0])
+        print "       %s 5m " % (sys.argv[0])
+        print "       %s 1m-80m " % (sys.argv[0])
+        print "       %s 1m+3m  " % (sys.argv[0])
+        print "       %s 2m,5m,10m-20m,25m+2m " % (sys.argv[0])
+        print "       %s mercury1cmm" % (sys.argv[0])
+        print "       %s mercury1-3cmm" % (sys.argv[0])
+        print "       %s mercury1,3cms" % (sys.argv[0])
+	print " Ipaddr base "
+        print "       %s 192.168.5.1" % (sys.argv[0])
+        print "       %s .1 " % (sys.argv[0])
+        print "       %s 192.168.5.1-5,7,10+2,15-20 " % (sys.argv[0])
+        print " Note) If first arg is -d, it just prints without run it (dry mode)"
+        sys.exit(1)
+
+dry = False
+if sys.argv[1] == "-d":
+	dry = True
+	del sys.argv[1]
+
+def parseHostRange(hostsRange):
+    for h in hostsRange:
+        # ranges
+        if h.find("-") != -1 or h.find("+") != -1:
+            if h.find("-") != -1:
+                rangeFirstLast = h.split("-")
+                assert(len(rangeFirstLast) == 2)
+                start = int(rangeFirstLast[0])
+                end = int(rangeFirstLast[1]) 
+            else:
+                rangeFirstCount = h.split("+")
+                assert(len(rangeFirstCount) == 2)
+                start = int(rangeFirstCount[0])
+                end = start + int(rangeFirstCount[1]) - 1
+            while start <= end:
+                yield start
+                start += 1
+        else:
+            yield int(h)
+    
+def expandHosts(hostsString):
+    returnHosts = []
+    prefix = "atom"
+    suffix = "m"
+
+    p = re.compile('(\d+\.\d+\.\d+)?\.([\d,\-,+]+)')
+    m = p.match(hostsString)
+
+    if m:
+        if m.group(1):
+            subnet = m.group(1)
+        else:
+            subnet = defaultIpmiSubnet
+        hostpart = m.group(2)
+        # comma-delimited
+        for h in parseHostRange(hostpart.split(",")):
+            returnHosts.append("%s.%d" % (subnet, h))
+    elif hostsString.find("mercury") != -1:
+		# mercury for cmm/cms/ons for chassis management
+        hostsString = hostsString.replace("mercury", "")
+        prefix = "mercury"
+        pm = re.compile('([\d+\-,+]+)([a-zA-Z]+)')
+        mm = pm.match(hostsString)
+        if mm:
+            hostsString = mm.group(1)
+            suffix = mm.group(2)
+        else:
+			print "Error: Unknown format %s%s" % (prefix, hostString)
+			sys.exit(1)
+    else:
+        # nuke "atom" in "atomXX"
+        if hostsString.find("atom") != -1:
+            # atom found
+            hostsString = hostsString.replace("atom", "")
+
+#	print "Len=%d" % len(hostsString)
+    if prefix == "atom":
+        ps = re.compile('[0-9]+')	
+        iterator = ps.finditer(hostsString)	
+        for s in iterator:
+            #		print s.end()
+            if (s.end() >=len(hostsString) or  hostsString[s.end()] != 'm'):
+                print "Please add  'm'  to Hostsname (atomXXXm)" 
+                sys.exit(1)
+        hostsString = hostsString.replace("m", "")
+
+    #	print hostsString 
+    #	print prefix 
+    #	print suffix 
+
+    # "01" -> "1", "02" -> "2", etc.
+    # "001" -> "1", "002" -> "2", etc.
+    for i in range(1, 10):
+        hostsString = hostsString.replace("%02d" % (i), "%d" % (i))
+        hostsString = hostsString.replace("%03d" % (i), "%d" % (i))
+
+    # comma-delimited
+    for h in parseHostRange(hostsString.split(",")):
+        if prefix == "atom":
+            returnHosts.append("atom%03d%s" % (h, suffix))
+        else:
+            returnHosts.append("%s%d%s" % (prefix, h, suffix))
+    return returnHosts
+
+commandString = ""
+for arg in sys.argv[2:]:
+    commandString += " " + arg
+commandString.strip()
+
+for host in expandHosts(sys.argv[1]):
+    execString = "ipmitool %s -H %s %s" % (ipmitoolArgs, host, commandString)
+   # print "\033[94mRUNNING [%s]\033[0m" % (execString)
+    print "\033[95mRUNNING [%s]\033[0m" % (execString)
+    if not dry:
+	    os.system(execString)

@@ -1,0 +1,7 @@
+#!/bin/bash
+for host in $(mmres ls -l | grep "$(whoami)" | cut -c13-19); do
+        echo ssh -o StrictHostKeyChecking=no $host $*
+        ssh -o StrictHostKeyChecking=no $host $*
+#        echo $host
+done
+
