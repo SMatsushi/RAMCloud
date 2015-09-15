@@ -97,7 +97,7 @@ server_port = 12247
 second_backup_port = 12248
 
 hosts = []
-for i in range(1, 11):
+for i in range(1, 20):
     hosts.append(('atom%03d' % i,
                   i))
 

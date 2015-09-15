@@ -46,9 +46,10 @@ def recover(num_servers,
             timeout=100,
             log_level='NOTICE',
             log_dir='logs',
-            transport='infrc',
+            transport='tcp',
             verbose=False,
-            debug=False):
+            debug=False,
+            dry=False):
     """Run a recovery on the cluster specified in the config module and
     return statisitics about the recovery.
 
@@ -136,6 +137,9 @@ def recover(num_servers,
                   setup such as attaching gdb.
     @type  debug: C{bool}
 
+    @param dry: Do not initiate processes. Normally use with verbose
+    @type  dry: C{bool}
+
     @return: A recoverymetrics stats struct (see recoverymetrics.parseRecovery).
     """
     server_binary = '%s/server' % obj_path
@@ -152,9 +156,10 @@ def recover(num_servers,
     args['transport'] = transport
     args['verbose'] = verbose
     args['debug'] = debug
-    args['coordinator_host'] = config.old_master_host
+    args['coordinator_host'] = config.hosts.pop(0)
     args['coordinator_args'] = coordinator_args
     args['backup_args'] = backup_args
+    args['dry'] = dry
     # Just a guess of about how much capacity a master will have to have
     # to hold all the data from all the partitions
     if master_ram:
@@ -172,8 +177,12 @@ def recover(num_servers,
                       '-t %d -k %d -l %s -o %d' % (client_binary,
                       num_objects, num_removals, object_size,
                       num_partitions, num_servers, log_level, num_overwrites))
-    args['old_master_host'] = config.old_master_host
-    args['client_hosts'] = [config.old_master_host]
+    # should be passed print out of array of lists.
+    args['old_master_host'] = config.hosts.pop(0)
+    chost = []
+    chost.append(config.hosts.pop(0))
+    args['client_hosts'] = chost
+
     if old_master_ram:
         args['old_master_args'] = '-d -t %d' % old_master_ram
     else:
@@ -184,20 +193,28 @@ def recover(num_servers,
                   'use rcmonster if you need more')
             old_master_ram = 42000
         args['old_master_args'] = '-d -D -t %d' % old_master_ram
+    if args['verbose']:
+        print ('Calling cluster.run with:')
+        print (args)
+        print (' on hosts:')
+        print (config.hosts)
     recovery_logs = cluster.run(**args)
 
     # Collect metrics information.
     stats = {}
-    stats['metrics'] = recoverymetrics.parseRecovery(recovery_logs)
-    report = recoverymetrics.makeReport(stats['metrics']).jsonable()
-    f = open('%s/metrics' % recovery_logs, 'w')
-    getDumpstr().print_report(report, file=f)
-    f.close()
-    stats['run'] = recovery_logs
-    stats['count'] = num_objects
-    stats['size'] = object_size
-    stats['ns'] = stats['metrics'].client.recoveryNs
-    stats['report'] = report
+    if dry:
+        print('Running recovery metrics.py');
+    else:
+        stats['metrics'] = recoverymetrics.parseRecovery(recovery_logs)
+        report = recoverymetrics.makeReport(stats['metrics']).jsonable()
+        f = open('%s/metrics' % recovery_logs, 'w')
+        getDumpstr().print_report(report, file=f)
+        f.close()
+        stats['run'] = recovery_logs
+        stats['count'] = num_objects
+        stats['size'] = object_size
+        stats['ns'] = stats['metrics'].client.recoveryNs
+        stats['report'] = report
     return stats
 
 def insist(*args, **kwargs):
@@ -263,8 +280,9 @@ if __name__ == '__main__':
             metavar='SECS',
             help="Abort if the client application doesn't finish within "
                  'SECS seconds')
-    parser.add_option('-T', '--transport', default='infrc',
-            help='Transport to use for communication with servers')
+    parser.add_option('-T', '--transport', default='tcp',
+            help='Transport to use for communication with servers'
+                 'Default is "config" which imports definition in config.py')
     parser.add_option('-v', '--verbose', action='store_true', default=False,
             help='Print progress messages')
     parser.add_option('-p', '--partitions', type=int, default=1,
@@ -282,6 +300,8 @@ if __name__ == '__main__':
     parser.add_option('--trend',
             dest='trends', action='append',
             help='Add to dumpstr trend line (may be repeated)')
+    parser.add_option('--dry', action='store_true', default=False,
+            help='Do not initiate processes. Normally use with -v')
     (options, args) = parser.parse_args()
 
     args = {}
@@ -304,6 +324,7 @@ if __name__ == '__main__':
     args['coordinator_args'] = options.coordinator_args
     args['master_args'] = options.master_args
     args['backup_args'] = options.backup_args
+    args['dry'] = options.dry
 
     try:
         stats = recover(**args)
@@ -314,6 +335,10 @@ if __name__ == '__main__':
             for trend in options.trends:
                 if trend not in trends:
                     trends.append(trend)
+        if options.dry:
+            print('performing stats analysis');
+            sys.exit()
+            
         trends = zip(trends,
                      [stats['ns'] / 1e9] * len(trends))
 

@@ -47,7 +47,9 @@ valgrind_command = ''
 server_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
     'tcp-1g': 'tcp:host=%(host1g)s,port=%(port)d',
-    'fast+dpdk': 'fast+dpdk:mac=%(mac)s',
+    'fast+dpdk': 'fast+dpdk:host=%(host)s,mac=%(mac)s',
+    'fast+dpdk+tcp': 'fast+dpdk:host=%(host)s,mac=%(mac)s;'
+                       'tcp:host=%(host)s,port=%(port)d',
     'fast+udp': 'fast+udp:host=%(host)s,port=%(port)d',
     'fast+udp-1g': 'fast+udp:host=%(host1g)s,port=%(port)d',
     'unreliable+udp': 'unreliable+udp:host=%(host)s,port=%(port)d',
@@ -60,6 +62,9 @@ server_locator_templates = {
 coord_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
     'tcp-1g': 'tcp:host=%(host1g)s,port=%(port)d',
+    'fast+dpdk': 'fast+dpdk:host=%(host)s,mac=%(mac)s',
+    'fast+dpdk+tcp': 'fast+dpdk:host=%(host)s,mac=%(mac)s;'
+                     'tcp:host=%(host)s,port=%(port)d',
     'fast+udp': 'fast+udp:host=%(host)s,port=%(port)d',
     'fast+udp-1g': 'fast+udp:host=%(host1g)s,port=%(port)d',
     'unreliable+udp': 'unreliable+udp:host=%(host)s,port=%(port)d',
@@ -138,6 +143,7 @@ class Cluster(object):
     @ivar disk: Server args for specifying the storage device to use for
                 backups (default: default_disk1 taken from {,local}config.py).
     @ivar disjunct: Disjunct (not collocate) entities on each server.
+    @ivar dry: Dry : Not spawn processes just printing (default False)
 
     === Other Stuff ===
     @ivar coordinator: None until start_coordinator() is run, then a
@@ -157,7 +163,10 @@ class Cluster(object):
     """
 
     def __init__(self, log_dir='logs', log_exists=False,
-                    cluster_name_exists=False):
+                    cluster_name_exists=False,
+                    verbose = False,
+                    dry = False
+                 ):
         """
         @param log_dir: Top-level directory in which to write log files.
                         A separate subdirectory will be created in this
@@ -183,6 +192,16 @@ class Cluster(object):
         self.replicas = 3
         self.disk = default_disk1
         self.disjunct = False
+        self.dry = dry
+
+        if self.verbose:
+            print('log_level=%s, verbose=%s, disjunct=%s, dry=%s' % (
+                    self.log_level, self.verbose, self.disjunct, self.dry))
+       
+        if self.transport == 'config':
+            self.transport = default_transport
+            if self.verbose:
+                print('Using default transport "%s" defined in config.py' % transport)
 
         if cluster_name_exists: # do nothing if it exists
             self.cluster_name = None
@@ -204,10 +223,13 @@ class Cluster(object):
         self.coordinator_host= getHosts()[0]
         self.coordinator_locator = coord_locator(self.transport,
                                                  self.coordinator_host)
-        self.log_subdir = log.createDir(log_dir, log_exists)
+        if not self.dry:
+            self.log_subdir = log.createDir(log_dir, log_exists)
+            # Create a perfcounters directory under the log directory.
+            os.mkdir(self.log_subdir + '/perfcounters')
+        else:
+            self.log_subdir = None
 
-        # Create a perfcounters directory under the log directory.
-        os.mkdir(self.log_subdir + '/perfcounters')
         if not log_exists:
             self.sandbox = Sandbox()
         else:
@@ -255,8 +277,8 @@ class Cluster(object):
                  coordinator_binary, self.coordinator_locator,
                  self.log_level, self.log_subdir,
                  self.coordinator_host[0], args))
-
-            self.coordinator = self.sandbox.rsh(self.coordinator_host[0],
+            if not self.dry:
+                self.coordinator = self.sandbox.rsh(self.coordinator_host[0],
                         command, bg=True, stderr=subprocess.STDOUT)
         else:
             # currently hardcoding logcabin server because ankita's logcabin
@@ -269,7 +291,8 @@ class Cluster(object):
                  self.log_level, self.log_subdir,
                  self.coordinator_host[0], args))
 
-            self.coordinator = self.sandbox.rsh(self.coordinator_host[0],
+            if not self.dry:
+                self.coordinator = self.sandbox.rsh(self.coordinator_host[0],
                         command, bg=True, stderr=subprocess.STDOUT)
 
             # just wait for coordinator to start
@@ -280,17 +303,21 @@ class Cluster(object):
                                 (scripts_path, self.log_subdir,
                                  self.coordinator_host[0],
                                  obj_path, self.coordinator_locator))
-
-            restarted_coord = self.sandbox.rsh(self.coordinator_host[0],
+            if not self.dry:
+                restarted_coord = self.sandbox.rsh(self.coordinator_host[0],
                         restart_command, kill_on_exit=True, bg=True,
                         stderr=subprocess.STDOUT)
-
+            if self.verbose:
+                print('Coordinator restart_command line arguments %s',
+                      (restart_command))
+                print('restart_coord=', restarted_coord)
         self.ensure_servers(0, 0)
         if self.verbose:
             print('Coordinator started on %s at %s' %
                    (self.coordinator_host[0], self.coordinator_locator))
             print('Coordinator command line arguments %s' %
                    (command))
+            print('coordinator=', self.coordinator)
         return self.coordinator
 
     def start_server(self,
@@ -356,28 +383,32 @@ class Cluster(object):
         if master:
             self.masters_started += 1
 
-        # Adding redirection for stdout and stderr.
-        stdout = open(log_prefix + '.out', 'w')
-        stderr = open(log_prefix + '.err', 'w')
-        if not kill_on_exit:
-            server = self.sandbox.rsh(host[0], command, is_server=True,
+        if not self.dry:
+            # Adding redirection for stdout and stderr.
+            stdout = open(log_prefix + '.out', 'w')
+            stderr = open(log_prefix + '.err', 'w')
+            if not kill_on_exit:
+                server = self.sandbox.rsh(host[0], command, is_server=True,
                                       locator=server_locator(self.transport,
                                                              host, port),
                                       kill_on_exit=False, bg=True,
                                       stdout=stdout,
                                       stderr=stderr)
-        else:
-            server = self.sandbox.rsh(host[0], command, is_server=True,
+            else:
+                server = self.sandbox.rsh(host[0], command, is_server=True,
                                       locator=server_locator(self.transport,
                                                              host, port),
                                       bg=True,
                                       stdout=stdout,
                                       stderr=stderr)
-
+        else:
+            server = None
+            
         if self.verbose:
             print('Server started on %s at %s: %s' %
                   (host[0],
                    server_locator(self.transport, host, port), command))
+            print('rsh returns=', server)
         return server
 
     def kill_server(self, locator):
@@ -429,16 +460,18 @@ class Cluster(object):
             numMasters = self.masters_started
         if not numBackups:
             numBackups = self.backups_started
-        self.sandbox.checkFailures()
+        if not self.dry:
+            self.sandbox.checkFailures()
         try:
             ensureCommand = ('%s -C %s -m %d -b %d -l 1 --wait %d '
                              '--logFile %s/ensureServers.log' %
                              (ensure_servers_bin, self.coordinator_locator,
                              numMasters, numBackups, timeout,
                              self.log_subdir))
+            if not self.dry:
+                self.sandbox.rsh(self.coordinator_host[0], ensureCommand)
             if self.verbose:
                 print("ensureServers command: %s" % ensureCommand)
-            self.sandbox.rsh(self.coordinator_host[0], ensureCommand)
         except:
             # prefer exceptions from dead processes to timeout error
             self.sandbox.checkFailures()
@@ -446,7 +479,7 @@ class Cluster(object):
 
     def start_clients(self, hosts, client):
         """Start a client binary on a set of nodes.
-        @param hosts: List of (hostname, ip, id) tuples describing the
+        @param hosts: List of (hostname, ip, id, Mac) tuples describing the
                       nodes on which to start the client binary.
                       Each binary is launch with a --numClients and
                       --clientIndex argument.
@@ -467,10 +500,12 @@ class Cluster(object):
                         i, self.log_subdir, self.next_client_id,
                         client_host[0], client_args))
             self.next_client_id += 1
-            clients.append(self.sandbox.rsh(client_host[0], command, bg=True))
+            if not self.dry:
+                clients.append(self.sandbox.rsh(client_host[0], command, bg=True))
             if self.verbose:
                 print('Client %d started on %s: %s' % (i, client_host[0],
                         command))
+                print('clinents=', clients)
         return clients
 
     def wait(self, processes, timeout=30):
@@ -485,10 +520,11 @@ class Cluster(object):
         start = time.time()
         for i, p in enumerate(processes):
             while p.proc.returncode is None:
-                self.sandbox.checkFailures()
-                time.sleep(.1)
-                if time.time() - start > timeout:
-                    raise Exception('timeout exceeded %s' % self.log_subdir)
+                if not self.dry:
+                    self.sandbox.checkFailures()
+                    time.sleep(.1)
+                    if time.time() - start > timeout:
+                        raise Exception('timeout exceeded %s' % self.log_subdir)
             if self.verbose:
                 print('%s finished' % p.sonce)
 
@@ -581,7 +617,9 @@ def run(
         enable_logcabin=False,     # Do not enable logcabin.
         valgrind=False,		   # Do not run under valgrind
         valgrind_args='',	   # Additional arguments for valgrind
-        disjunct=False,            # Disjunct entities on a server
+        disjunct=True,             # Disjunct entities on a server
+        dry=False,		   # Do not initiate processes.
+                                   # Normally use with -v option.
         coordinator_host=None
         ):
     """
@@ -590,6 +628,9 @@ def run(
     @return: string indicating the path to the log files for this run.
     """
 
+    if dry:
+        print('Dry run mode: just check sequence and print, not executed.')
+        
     if not client:
         raise Exception('You must specify a client binary to run '
                         '(try obj.master/client)')
@@ -632,6 +673,7 @@ def run(
         cluster.enable_logcabin = enable_logcabin
         cluster.disjunct = disjunct
         cluster.hosts = getHosts()
+        cluster.dry = dry
 
         if not coordinator_host:
 # Workaround:
@@ -683,6 +725,8 @@ def run(
                 print('All servers running')
 
         if client:
+            if verbose:
+                print('Starting clients..')
             # Note: even if it's OK to share hosts between clients and servers,
             # don't do it unless necessary.
             if not client_hosts:
@@ -695,11 +739,27 @@ def run(
 
                 client_hosts = [host_list[i % len(host_list)]
                                 for i in range(num_clients)]
+            if verbose:
+                print('Client_hosts len=%d:' % len(client_hosts), client_hosts)
+                print('Num_clients=%d' % num_clients)
             assert(len(client_hosts) == num_clients)
 
             clients = cluster.start_clients(client_hosts, client)
+            if verbose:
+                print('Waiting Clients=', clients)
+                print('Timeout=', timeout)
             cluster.wait(clients, timeout)
-
+            # just wait after client ends
+            # time.sleep(1)
+            if verbose:
+                print('Shuting down this cluster..')
+            # cluster.shutdown()
+            if verbose:
+                print('Waiting Servers=', servers)
+            # cluster.wait(servers, timeout)
+            if verbose:
+                print('Waiting Coordinator=', coordinator)
+            # cluster.wait(coordinator, timeout)
         return cluster.log_subdir
 
 if __name__ == '__main__':
@@ -771,8 +831,10 @@ if __name__ == '__main__':
     parser.add_option('--valgrindArgs', metavar='ARGS', default='',
             dest='valgrind_args',
             help='Arguments to pass to valgrind')
-    parser.add_option('--disjunct', action='store_true', default=False,
+    parser.add_option('--disjunct', action='store_true', default=True,
             help='Disjunct entities (disable collocation) on each server')
+    parser.add_option('--dry', action='store_true', default=False,
+            help='Do not initiate processes. Normally use with -v')
 
     (options, args) = parser.parse_args()
 
