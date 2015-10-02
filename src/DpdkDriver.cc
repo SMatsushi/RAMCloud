@@ -32,6 +32,7 @@
 #include <rte_mbuf.h>
 #include <rte_memcpy.h>
 #include <rte_ring.h>
+#include <rte_version.h>
 #pragma GCC diagnostic warning "-Wconversion"
 
 #include "Common.h"
@@ -150,6 +151,7 @@ DpdkDriver::DpdkDriver(Context* context,
     // setup a NIC/HW-based filter on the ethernet type so that
     // only FAST transport traffic is delivered from the NIC to
     // DPDK.
+#if RTE_VER_MAJOR < 2
     struct rte_ethertype_filter ethertype_filter;
 
     ethertype_filter.ethertype = NetUtil::EthPayloadType::FAST;
@@ -157,6 +159,22 @@ DpdkDriver::DpdkDriver(Context* context,
     ethertype_filter.priority = 0;
 
     rte_eth_dev_add_ethertype_filter(portId, 0, &ethertype_filter, 0);
+#else
+    struct rte_eth_ethertype_filter filter;
+
+    ret = rte_eth_dev_filter_supported(portId,
+                                       RTE_ETH_FILTER_ETHERTYPE);
+    if (ret < 0) {
+      LOG(WARNING, "ethertype filter is not supported on port %u.\n", portId);
+    } else {
+      memset(&filter, 0, sizeof(filter));
+      ret = rte_eth_dev_filter_ctrl(portId, RTE_ETH_FILTER_ETHERTYPE,
+                                    RTE_ETH_FILTER_ADD, &filter);
+      if (ret < 0) {
+        LOG(WARNING, "failed to add ethertype filter\n");
+      }
+    }
+#endif
 
     // setup and initialize the receive and transmit NIC queues,
     // and activate the port.
