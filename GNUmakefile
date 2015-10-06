@@ -226,6 +226,12 @@ endif
 ifneq ($(DEBUG),yes)
 COMFLAGS += -DWA_FOR_NDEBUG
 endif
+
+ifeq ($(TUNE),yes)
+# tune for low latency
+COMFLAGS += -DTENTATIVE_TUNE
+endif
+
 # end of DPDK
 endif
 

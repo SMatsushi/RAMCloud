@@ -101,6 +101,21 @@ void
 FailureDetector::detectorThreadEntry(FailureDetector* detector,
                                      Context* context)
 {
+#if defined(TENTATIVE_TUNE)
+    cpu_set_t set;
+    int numCpus;
+
+    numCpus = downCast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+    if (numCpus > 2) {
+      CPU_ZERO(&set);
+      for (int i = 2; i < numCpus; i++ ) {
+        CPU_SET(i, &set);
+      }
+      sched_setaffinity((pid_t)syscall(SYS_gettid), sizeof(set), &set);
+    }
+    LOG(NOTICE, "FailureDetector: tid=%d", (int)syscall(SYS_gettid));
+#endif
+
     LOG(NOTICE, "Failure detector thread started");
 
     // Wait a while before sending the first probe, so that the coordinator
