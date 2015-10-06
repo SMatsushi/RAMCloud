@@ -210,6 +210,9 @@ RTE_ARLIBS := $(RTE_LIBDIR)/libintel_dpdk.a
 LIBS += -Wl,--whole-archive $(RTE_ARLIBS) -Wl,--no-whole-archive -ldl
 endif
 
+ifneq ($(DEBUG),yes)
+COMFLAGS += -DWA_FOR_NDEBUG
+endif
 # end of DPDK
 endif
 
