@@ -368,6 +368,15 @@ WorkerManager::waitForRpc(double timeoutSeconds) {
 void
 WorkerManager::workerMain(Worker* worker)
 {
+#if defined(TENTATIVE_TUNE)
+    cpu_set_t set;
+
+    CPU_ZERO(&set);
+    CPU_SET(1, &set);
+    sched_setaffinity((pid_t)syscall(SYS_gettid), sizeof(set), &set);
+    LOG(NOTICE, "workerMain: tid=%d", (int)syscall(SYS_gettid));
+#endif
+
     PerfStats::registerStats(&PerfStats::threadStats);
 
     // Cycles::rdtsc time that's updated continuously when this thread is idle.
