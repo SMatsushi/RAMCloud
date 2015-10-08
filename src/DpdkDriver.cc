@@ -1,5 +1,6 @@
 /* Copyright (c) 2015 Stanford University
  * Copyright (c) 2014-2015 Huawei Technologies Co. Ltd.
+ * Copyright (c) 2014-2015 NEC Corporation
  * The original version of this module was contributed by Anthony Iliopoulos
  * at DBERC, Huawei
  *
