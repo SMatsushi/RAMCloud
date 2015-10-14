@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 # Copyright (c) 2011 Stanford University
-# Copyright (c) 2014-2015 NEC Corporation
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -94,84 +93,13 @@ coordinator_port = 12246
 server_port = 12247
 second_backup_port = 12248
 
-hosts = []
-for i in range(1, 11):
-    hosts.append(('atom%03d' % i,
-                  i))
-
-
-# --- merged from localconfig.py
-# returns hosts[] based on the information defined in /etc/hosts
-# use_hosts: a list of the host number to use. 0 if use all available hosts
-def get_host_info(use_hosts):
-    valid_entry = re.compile('^([\d.]+)\s+(atom(\d\d\d)[am]?)\s+#\s*(\S+)\s+')
-    hosts_file = "/etc/hosts"
-
-    host_info = {}
-    file = open(hosts_file)
-    for line in file:
-        m = valid_entry.search(line)
-        if m:
-            (ip, host, host_id, mac) = m.group(1,2,3,4)
-            host_id = int(host_id)
-            if not host_id in host_info:
-                host_info[host_id] = {}
-            if re.search("a$", host):
-                host_info[host_id]['mac']  = mac
-            if re.search("\d$", host):
-                host_info[host_id]['host'] = host
-                host_info[host_id]['ip']   = ip
-
-    if not use_hosts:
-        use_hosts = sorted(list(host_info.keys()))
-
-    hosts =[]
-    for host_id in use_hosts:
-        info = host_info[host_id]
-        hosts.append((info['host'], info['ip'], host_id, info['mac']))
-    return hosts
-
-# returns hosts[] having the hosts locked by the current user in mmres
-# merged from localconfig.py
-def get_hosts_from_mmres():
-    rcresOutput = commands.getoutput('mmres ls -l | grep "$(whoami)" | cut -c13-19 | grep "atom[0-9]" | cut -c5-7')
-    rcresFailed = re.match(".*command not found.*", rcresOutput)
-    if rcresFailed:
-        raise Exception ("config.py could not invoke mmres (%s);\r\n"
-                         "\tplease specify a custom hosts list in scripts/localconfig.py" % rcresOutput)
-
-    if len(rcresOutput) == 0:
-        raise Exception ("config.py found 0 atomXXX servers locked in mmres;\r\n"
-                         "\tcheck your locks or specify a custom hosts list in scripts/localconfig.py")
-
-    # Everything checks out, build list
-    serverList = []
-    for hostNum in rcresOutput.split():
-        i = int(hostNum)
-        serverList.append(i)
-    return get_host_info(serverList)
-
-# a list of the hosts available for servers or clients
-# use_hosts = range(1,11) # atom001..atom010
-
-# for comatibility with the documentation of the RAMCloud in a box
-use_hosts = []
-for host in hosts:
-    use_hosts.append(host[1])
-
-hosts = get_host_info(use_hosts)
-# if mmres is available, enable following line:
-#hosts = get_hosts_from_mmres()
-
 # Command-line argument specifying where the first backup on each
 # server should storage the segment replicas.
 default_disk1 = '-f /dev/sda2'
-default_disk1 = '-f /var/ramcloud/backup/backup1.db'
 
 # Command-line argument specifying where the second backup should
 # store its segment replicas.
 default_disk2 = '-f /dev/sdb2'
-default_disk2 = '-f /var/ramcloud/backup/backup2.db'
 
 # Try to include local overrides.
 try:
