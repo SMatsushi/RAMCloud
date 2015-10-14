@@ -12,6 +12,7 @@ include $(wildcard private/MakefragPrivateTop)
 DEBUG ?= yes
 YIELD ?= no
 SSE ?= sse4.2
+ARCH ?= core2
 COMPILER ?= gnu
 VALGRIND ?= no
 ONLOAD_DIR ?= /usr/local/openonload-201405
@@ -61,7 +62,7 @@ COMFLAGS := $(BASECFLAGS) $(OPTFLAG) -fno-strict-aliasing \
 	        -MD -m$(SSE) \
 	        $(DEBUGFLAGS)
 ifeq ($(COMPILER),gnu)
-COMFLAGS += -march=core2
+COMFLAGS += -march=$(ARCH)
 endif
 ifeq ($(VALGRIND),yes)
 COMFLAGS += -DVALGRIND
@@ -199,7 +200,6 @@ DPDK_VER_MIN := $(shell grep '^\#define RTE_VER_MINOR' $(VER_FILE) | cut -d' ' -
 DPDK_VER_MAJ ?= 1
 DPDK_VER_MIN ?= 8
 DPDK_VER := $(DPDK_VER_MAJ)$(DPDK_VER_MIN)
-$(info DPDK_VER=$(DPDK_VER))
 
 ifeq ($(DPDK_SHARED),yes)
 # link with the shared libraries
@@ -226,11 +226,8 @@ endif
 ifneq ($(DEBUG),yes)
 COMFLAGS += -DWA_FOR_NDEBUG
 endif
-
-ifeq ($(TUNE),yes)
 # tune for low latency
 COMFLAGS += -DTENTATIVE_TUNE
-endif
 
 # end of DPDK
 endif
