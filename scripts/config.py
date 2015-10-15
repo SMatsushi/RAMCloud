@@ -107,5 +107,63 @@ try:
 except ImportError:
     pass
 
+# Returns a list of the hosts available for servers or clients;
+# each entry consists of a name for the host (for ssh), an IP address
+# to use for creating service locators, and an id for generating
+# Ethernet addresses.
+#
+# By default, the function will return a list generated from servers
+# locked by the current user in rcres (an RAMCloud internal utility).
+# If rcres is not available, a custom list can be defined in
+# localconfig.py (see below and the wiki for additional instructions).
+# In the event that rcres is available and a custom list is defined,
+# the function will validate the custom list against rcres.
+#
+# Example for constructing a custom list in localconfig.py:
+# hosts = []
+# for i in range(1, 61):
+#     hosts.append(('rc%02d' % i,
+#                   '192.168.1.%d' % (100 + i),
+#                   i))
+
+def getHosts():
+  # Find servers locked by user via rcres
+  rcresOutput = commands.getoutput('rcres ls -l | grep "$(whoami)" | cut -c13-16 | grep "rc[0-9]" | cut -c3-4')
+  rcresFailed = re.match(".*not found.*", rcresOutput)
+
+  # If hosts overridden in localconfig.py, check that all servers are locked
+  if 'hosts' in globals():
+    if rcresFailed:
+      return hosts
+    requstedUnlockedHosts = []
+    for host in hosts:
+      if str("%02d" % host[2]) not in rcresOutput.split():
+        requstedUnlockedHosts.append(host[0])
+
+    if len(requstedUnlockedHosts) > 0:
+      raise Exception ("Manually defined hosts list in localconfig.py includes the "
+        "following servers not locked by user in rcres:\r\n\t%s" % requstedUnlockedHosts)
+
+    return hosts
+
+  # hosts has not been overridden, check that rcres has some servers for us
+  else:
+    if rcresFailed:
+      raise Exception ("config.py could not invoke rcres (%s);\r\n"
+        "\tplease specify a custom hosts list in scripts/localconfig.py" % rcresOutput)
+
+    if len(rcresOutput) == 0:
+      raise Exception ("config.py found 0 rcXX servers locked in rcres;\r\n"
+        "\tcheck your locks or specify a custom hosts list in scripts/localconfig.py")
+
+    # Everything checks out, build list
+    serverList = []
+    for hostNum in rcresOutput.split():
+      i = int(hostNum)
+      serverList.append(('rc%02d' % i,
+                         '192.168.1.%d' % (100 + i),
+                         i))
+    return serverList
+
 if __name__ == '__main__':
     print('\n'.join([s[0] for s in getHosts()]))
