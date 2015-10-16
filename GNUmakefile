@@ -12,6 +12,7 @@ include $(wildcard private/MakefragPrivateTop)
 DEBUG ?= yes
 YIELD ?= no
 SSE ?= sse4.2
+ARCH ?= core2
 COMPILER ?= gnu
 VALGRIND ?= no
 ONLOAD_DIR ?= /usr/local/openonload-201405
@@ -40,7 +41,7 @@ endif
 # ExternalStorage implementation.
 ZOOKEEPER ?= yes
 ifeq ($(ZOOKEEPER),yes)
-ZOOKEEPER_LIB ?= /usr/local/lib/libzookeeper_mt.a
+ZOOKEEPER_LIB ?= -lzookeeper_mt
 ZOOKEEPER_DIR ?= /usr/local/zookeeper-3.4.5
 else
 ZOOKEEPER_LIB :=
@@ -61,7 +62,7 @@ COMFLAGS := $(BASECFLAGS) $(OPTFLAG) -fno-strict-aliasing \
 	        -MD -m$(SSE) \
 	        $(DEBUGFLAGS)
 ifeq ($(COMPILER),gnu)
-COMFLAGS += -march=core2
+COMFLAGS += -march=$(ARCH)
 endif
 ifeq ($(VALGRIND),yes)
 COMFLAGS += -DVALGRIND
@@ -186,7 +187,6 @@ DPDK_VER_MIN := $(shell grep '^\#define RTE_VER_MINOR' $(VER_FILE) | cut -d' ' -
 DPDK_VER_MAJ ?= 1
 DPDK_VER_MIN ?= 8
 DPDK_VER := $(DPDK_VER_MAJ)$(DPDK_VER_MIN)
-$(info DPDK_VER=$(DPDK_VER))
 
 ifeq ($(DPDK_SHARED),yes)
 # link with the shared libraries
@@ -213,11 +213,8 @@ endif
 ifneq ($(DEBUG),yes)
 COMFLAGS += -DWA_FOR_NDEBUG
 endif
-
-ifeq ($(TUNE),yes)
 # tune for low latency
 COMFLAGS += -DTENTATIVE_TUNE
-endif
 
 # end of DPDK
 endif
