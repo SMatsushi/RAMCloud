@@ -1,0 +1,15 @@
+# -*- makefile-gmake -*-
+# included from the bottom of ../GNUmakefile
+
+ifeq ($(COMPILER),gnu)
+ifeq ($(shell test $(GCC_MINOR_VERSION) -ge 8 && echo 1), 1)
+# tentatively accept the warnings to build with gcc-4.8 or later
+CFLAGS   := $(filter-out -Werror, $(CFLAGS))
+CXXFLAGS := $(filter-out -Werror, $(CXXFLAGS))
+endif
+endif
+
+$(info CC   = $(CC)  $(shell $(CC)  -dumpversion))
+$(info CXX  = $(CXX) $(shell $(CXX) -dumpversion))
+$(info ARCH = $(ARCH), SSE = $(SSE))
+$(info DPDK = $(DPDK_VER))
