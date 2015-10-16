@@ -19,15 +19,15 @@
 #include "CycleCounter.h"
 #include "Fence.h"
 #include "Initialize.h"
-#include "RawMetrics.h"
 #include "PerfStats.h"
+#include "RawMetrics.h"
+#include "RpcLevel.h"
 #include "ShortMacros.h"
 #include "ServerRpcPool.h"
-#include "ServiceManager.h"
 #include "TimeTrace.h"
 #include "TimeTraceUtil.h"
 #include "WireFormat.h"
-#include "PerfCounter.h"
+#include "WorkerManager.h"
 
 // If the following line is uncommented, trace records will be generated that
 // allow service times to be computed for all RPCs.
@@ -53,7 +53,7 @@ static Syscall defaultSyscall;
  * use it points to defaultSyscall; for testing it points to a mock
  * object.
  */
-Syscall* ServiceManager::sys = &defaultSyscall;
+Syscall* WorkerManager::sys = &defaultSyscall;
 
 // Length of time that a worker will actively poll for new work before it puts
 // itself to sleep. This period should be much longer than typical RPC
@@ -61,31 +61,57 @@ Syscall* ServiceManager::sys = &defaultSyscall;
 // conversation with a single client.  It must also be much longer than the
 // time it takes to wake up the thread once it has gone to sleep (as of
 // September 2011 this time appears to be as much as 50 microseconds).
-int ServiceManager::pollMicros = 10000;
-
+int WorkerManager::pollMicros = 10000;
 // The following constant is used to signal a worker thread that
 // it should exit.
 #define WORKER_EXIT reinterpret_cast<Transport::ServerRpc*>(1)
 
 /**
- * Construct a ServiceManager.
+ * Construct a WorkerManager.
+ *
+ * \param context
+ *      Overall information about this server.
+ * \param maxCores
+ *      This class will try to ensure that the number of running worker
+ *      threads doesn't exceed this value. However, in order to prevent
+ *      deadlocks, it may occasionally be necessary to go beyond this
+ *      limit.
  */
-ServiceManager::ServiceManager(Context* context)
-    : Dispatch::Poller(context->dispatch, "ServiceManager")
+WorkerManager::WorkerManager(Context* context, uint32_t maxCores)
+    : Dispatch::Poller(context->dispatch, "WorkerManager")
     , context(context)
-    , services()
+    , levels()
     , busyThreads()
     , idleThreads()
-    , serviceCount(0)
+    , maxCores(maxCores)
+    , rpcsWaiting(0)
+    , testingSaveRpcs(0)
     , testRpcs()
 {
+    levels.resize(RpcLevel::maxLevel() + 1);
+
+    // Create all the worker threads. We create enough threads to
+    // execute maxCores RPCs in parallel, *plus* one thread for each
+    // RPC level not already in use. This is sufficient to prevent
+    // distributed deadlock over worker threads.
+    //
+    // Note: we create threads here rather than waiting until the thread
+    // is needed, because thread creation can be quite slow on Linux
+    // (> 250ms sometimes, see RAM-343) and a long stall in actually
+    // scheduling a thread can cause timeouts.
+
+    for (int i = maxCores + RpcLevel::maxLevel(); i > 0; i--) {
+        Worker* worker = new Worker(context);
+        worker->thread.construct(workerMain, worker);
+        idleThreads.push_back(worker);
+    }
 }
 
 /**
- * Destroy a ServiceManager.  This method is most commonly invoked during
- * testing (ServiceManagers rarely, if ever, get deleted in normal operation).
+ * Destroy a WorkerManager.  This method is most commonly invoked during
+ * testing (WorkerManagers rarely, if ever, get deleted in normal operation).
  */
-ServiceManager::~ServiceManager()
+WorkerManager::~WorkerManager()
 {
     Dispatch* dispatch = context->dispatch;
     assert(dispatch->isDispatchThread());
@@ -95,38 +121,6 @@ ServiceManager::~ServiceManager()
     foreach (Worker* worker, idleThreads) {
         worker->exit();
         delete worker;
-    }
-}
-
-/**
- * Register a new service with this ServiceManager; from now on, incoming
- * RPCs that specify the service's RpcService value will be dispatched to
- * the service.
- *
- * \param service
- *      The service to add.
- * \param type
- *      Incoming RPCs will be dispatched to the surface if they have this
- *      value in the #service field of their headers.  This type must not
- *      already have been used in a prior call to this method.
- */
-
-void
-ServiceManager::addService(Service& service, WireFormat::ServiceType type) {
-    assert(!services[type]);
-    services[type].construct(service);
-    serviceCount++;
-
-    // Create all the threads that this service will ever need;  do
-    // it here rather than waiting until the thread is needed in
-    // handleRpc, because thread creation can be quite slow on Linux
-    // (> 250ms sometimes, see RAM-343) and a long stall in handleRpc
-    // can cause timeouts.
-
-    for (int i = services[type]->maxThreads; i > 0; i--) {
-        Worker* worker = new Worker(context);
-        worker->thread.construct(workerMain, worker);
-        idleThreads.push_back(worker);
     }
 }
 
@@ -141,17 +135,14 @@ ServiceManager::addService(Service& service, WireFormat::ServiceType type) {
  *      service.
  */
 void
-ServiceManager::handleRpc(Transport::ServerRpc* rpc)
+WorkerManager::handleRpc(Transport::ServerRpc* rpc)
 {
-    assert(rpc->epochIsSet());
-
     // Find the service for this RPC.
     const WireFormat::RequestCommon* header;
     header = rpc->requestPayload.getStart<WireFormat::RequestCommon>();
-    if ((header == NULL) || (header->service >= WireFormat::INVALID_SERVICE) ||
-            !services[header->service]) {
+    if ((header == NULL) || (header->opcode >= WireFormat::ILLEGAL_RPC_TYPE)) {
 #if TESTING
-        if (serviceCount == 0) {
+        if (testingSaveRpcs) {
             // Special case for testing.
             testRpcs.push(rpc);
             return;
@@ -163,32 +154,42 @@ ServiceManager::handleRpc(Transport::ServerRpc* rpc)
             Service::prepareErrorResponse(&rpc->replyPayload,
                     STATUS_MESSAGE_TOO_SHORT);
         } else {
-            LOG(WARNING, "Incoming RPC requested unavailable service %d",
-                    header->service);
+            LOG(WARNING, "Incoming RPC contained unknown opcode %d",
+                    header->opcode);
             Service::prepareErrorResponse(&rpc->replyPayload,
-                    STATUS_SERVICE_NOT_AVAILABLE);
+                    STATUS_UNIMPLEMENTED_REQUEST);
         }
         rpc->sendReply();
         return;
     }
-    ServiceInfo* serviceInfo = services[header->service].get();
+    int level = RpcLevel::getLevel(WireFormat::Opcode(header->opcode));
 #ifdef LOG_RPCS
     LOG(NOTICE, "Received %s RPC at %lu with %u bytes",
-            WireFormat::opcodeSymbol(&rpc->requestPayload),
+            WireFormat::opcodeSymbol(header->opcode),
             reinterpret_cast<uint64_t>(rpc),
             rpc->requestPayload.size());
 #endif
 
-    // See if we have exceeded the concurrency limit for the service.
-    if (serviceInfo->requestsRunning >= serviceInfo->maxThreads) {
-        serviceInfo->waitingRpcs.push(rpc);
-#ifdef SMTT
-        context->timeTrace->record(TimeTraceUtil::queueLengthMsg(
-                WireFormat::ServiceType(header->service),
-                serviceInfo->waitingRpcs.size()));
-#endif
-        return;
+    // See if we should start executing this request. Once we reach our
+    // desired concurrency limit, only start a new request if its level
+    // is lower than that of any other running request. This ensures that
+    // we will always have enough threads to execute one request at
+    // each level, and this prevents distributed deadlock (deadlock could
+    // occur if all of the servers use up all of their threads on high-level
+    // requests, then those requests invoke lower-level RPCs to other
+    // servers, but none of the servers have threads to execute those
+    // lower-level requests).
+    if (busyThreads.size() >= maxCores) {
+        for (int i = level; i >= 0; i--) {
+            if (levels[i].requestsRunning > 0) {
+                // Can't run this request right now.
+                levels[level].waitingRpcs.push(rpc);
+                rpcsWaiting++;
+                return;
+            }
+        }
     }
+
     // Temporary code to test how much faster things would be without threads.
 #if 0
     if ((header->opcode == WireFormat::READ) &&
@@ -200,14 +201,14 @@ ServiceManager::handleRpc(Transport::ServerRpc* rpc)
     }
 #endif
 
-    serviceInfo->requestsRunning++;
+    levels[level].requestsRunning++;
 
     // Hand off the RPC to a worker thread.
     assert(!idleThreads.empty());
     Worker* worker = idleThreads.back();
     idleThreads.pop_back();
-    worker->serviceInfo = serviceInfo;
     worker->opcode = WireFormat::Opcode(header->opcode);
+    worker->level = level;
     worker->handoff(rpc);
     worker->busyIndex = downCast<int>(busyThreads.size());
     busyThreads.push_back(worker);
@@ -220,7 +221,7 @@ ServiceManager::handleRpc(Transport::ServerRpc* rpc)
  * worker threads will be visible to the caller.
  */
 bool
-ServiceManager::idle()
+WorkerManager::idle()
 {
     return busyThreads.empty();
 }
@@ -230,7 +231,7 @@ ServiceManager::idle()
  * for completion of outstanding RPCs.
  */
 int
-ServiceManager::poll()
+WorkerManager::poll()
 {
     int foundWork = 0;
 
@@ -256,11 +257,42 @@ ServiceManager::poll()
 
         // Highest priority: if there are pending requests that are waiting
         // for workers, hand off a new request to this worker ASAP.
-        ServiceInfo* info = worker->serviceInfo;
-        bool moreWork = !info->waitingRpcs.empty();
-        if (moreWork && (state != Worker::POSTPROCESSING)) {
-            worker->handoff(info->waitingRpcs.front());
-            info->waitingRpcs.pop();
+        bool startedNewRpc = false;
+        if (state != Worker::POSTPROCESSING) {
+            levels[worker->level].requestsRunning--;
+            if (rpcsWaiting) {
+                // Start an RPC with the lowest level (this is most efficient,
+                // since it's more likely that there are other servers with
+                // resources tied up waiting for this RPC).
+                //
+                // In addition, we must observe the core limits, which means
+                // we don't start another RPC unless we have spare cores, or
+                // unless the RPC we would start is at a level lower than any
+                // other running RPC.
+                for (int i = 0; ; i++) {
+                    Level* level = &levels[i];
+                    if ((level->requestsRunning != 0) &&
+                            // Note: we haven't yet removed the current
+                            // thread from busyThreads, so the number of
+                            // running workers is one less than
+                            // busyThreads.size().
+                            (busyThreads.size() > maxCores)) {
+                        // Can't start another RPC without exceeding core
+                        // limits.
+                        break;
+                    }
+                    if (level->waitingRpcs.empty()) {
+                        continue;
+                    }
+                    rpcsWaiting--;
+                    level->requestsRunning++;
+                    worker->level = i;
+                    worker->handoff(level->waitingRpcs.front());
+                    level->waitingRpcs.pop();
+                    startedNewRpc = true;
+                    break;
+                }
+            }
         }
 
         // Now send the response, if any.
@@ -282,7 +314,7 @@ ServiceManager::poll()
 
         // If the worker is idle, remove it from busyThreads (fill its
         // slot with the worker in the last slot).
-        if (!moreWork && (state != Worker::POSTPROCESSING)) {
+        if (!startedNewRpc && (state != Worker::POSTPROCESSING)) {
             if (worker != busyThreads.back()) {
                 busyThreads[worker->busyIndex] = busyThreads.back();
                 busyThreads[worker->busyIndex]->busyIndex =
@@ -291,7 +323,6 @@ ServiceManager::poll()
             busyThreads.pop_back();
             worker->busyIndex = -1;
             idleThreads.push_back(worker);
-            info->requestsRunning--;
         }
     }
     return foundWork;
@@ -310,7 +341,7 @@ ServiceManager::poll()
  *      limit.
  */
 Transport::ServerRpc*
-ServiceManager::waitForRpc(double timeoutSeconds) {
+WorkerManager::waitForRpc(double timeoutSeconds) {
     uint64_t start = Cycles::rdtsc();
     while (true) {
         if (!testRpcs.empty()) {
@@ -335,7 +366,7 @@ ServiceManager::waitForRpc(double timeoutSeconds) {
  *      and the dispatch thread.
  */
 void
-ServiceManager::workerMain(Worker* worker)
+WorkerManager::workerMain(Worker* worker)
 {
     PerfStats::registerStats(&PerfStats::threadStats);
 
@@ -349,7 +380,7 @@ ServiceManager::workerMain(Worker* worker)
         while (true) {
             uint64_t stopPollingTime = lastIdle + pollCycles;
 
-            // Wait for ServiceManager to supply us with some work to do.
+            // Wait for WorkerManager to supply us with some work to do.
             while (worker->state.load() != Worker::WORKING) {
                 if (lastIdle >= stopPollingTime) {
 #ifdef SMTT
@@ -376,7 +407,7 @@ ServiceManager::workerMain(Worker* worker)
                             // benign.
                             if (errno != EWOULDBLOCK) {
                                 LOG(ERROR, "futexWait failed in "
-                                           "ServiceManager::workerMain: %s",
+                                           "WorkerManager::workerMain: %s",
                                     strerror(errno));
                             }
                         }
@@ -395,11 +426,12 @@ ServiceManager::workerMain(Worker* worker)
                     TimeTraceUtil::RequestStatus::WORKER_START));
 #endif
 
+            worker->rpc->epoch = ServerRpcPool<>::getCurrentEpoch();
             Service::Rpc rpc(worker, &worker->rpc->requestPayload,
                     &worker->rpc->replyPayload);
-            worker->serviceInfo->service.handleRpc(&rpc);
+            Service::handleRpc(worker->context, &rpc);
 
-            // Pass the RPC back to ServiceManager for completion.
+            // Pass the RPC back to the dispatch thread for completion.
             Fence::leave();
 #ifdef SMTT
             worker->context->timeTrace->record(
@@ -426,7 +458,7 @@ ServiceManager::workerMain(Worker* worker)
 
 /**
  * Force this worker's thread to exit (and don't return until it has exited).
- * This method is only used during testing and ServiceManager destruction.
+ * This method is only used during testing and WorkerManager destruction.
  * This method should be invoked only in the dispatch thread.
  */
 void
@@ -482,7 +514,7 @@ Worker::handoff(Transport::ServerRpc* newRpc)
     if (prevState == SLEEPING) {
         // The worker got tired of polling and went to sleep, so we
         // have to do extra work to wake it up.
-        if (ServiceManager::sys->futexWake(reinterpret_cast<int*>(&state), 1)
+        if (WorkerManager::sys->futexWake(reinterpret_cast<int*>(&state), 1)
                 == -1) {
             LOG(ERROR,
                     "futexWake failed in Worker::handoff: %s",

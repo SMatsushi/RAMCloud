@@ -13,8 +13,8 @@
  * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef RAMCLOUD_SERVICEMANAGER_H
-#define RAMCLOUD_SERVICEMANAGER_H
+#ifndef RAMCLOUD_WORKERMANAGER_H
+#define RAMCLOUD_WORKERMANAGER_H
 
 #include <queue>
 
@@ -34,12 +34,11 @@ namespace RAMCloud {
  * the dispatch thread (which manages all of the network connections for a
  * server and runs Transport code) and the worker threads.
  */
-class ServiceManager : Dispatch::Poller {
+class WorkerManager : Dispatch::Poller {
   public:
-    explicit ServiceManager(Context* context);
-    ~ServiceManager();
+    explicit WorkerManager(Context* context, uint32_t maxCores = 3);
+    ~WorkerManager();
 
-    void addService(Service& service, WireFormat::ServiceType type);
     void exitWorker();
     void handleRpc(Transport::ServerRpc* rpc);
     bool idle();
@@ -57,38 +56,26 @@ class ServiceManager : Dispatch::Poller {
     /// The value of this variable is typically not modified except during
     /// testing.
     static int pollMicros;
-    static void workerMain(Worker* worker);
 
     /// Shared RAMCloud information.
     Context* context;
 
-    // Contains one entry for each possible RpcService value, which is used
-    // to dispatch requests to the service associated with that RpcService
-    // value (if there is one).
-    class ServiceInfo {
+    // This class (along with the levels variable) stores information
+    // for each of the levels defined by RpcLevel; if we run low on threads
+    // for servicing RPCs, we queue RPCs according to their level.
+    class Level {
       public:
-        Service& service;              /// The service to dispatch to.  NULL
-                                       /// means no service has been registered
-                                       /// for this RpcService.
-        int maxThreads;                /// Concurrency limit for this service.
-        int requestsRunning;           /// The number of RPCs currently being
-                                       /// executed by the service (each in a
-                                       /// separate thread); must never be
-                                       /// greater than maxThreads.
+        int requestsRunning;           /// The number of RPCs at this level
+                                       /// that are currently executing.
         std::queue<Transport::ServerRpc*> waitingRpcs;
                                        /// Requests that cannot execute until
-                                       /// an existing request completes
-                                       /// (requestsRunning == maxThreads).
-        explicit ServiceInfo(Service& service)
-            : service(service)
-            , maxThreads(service.maxThreads())
-            , requestsRunning(0)
+                                       /// a thread becomes available.
+        explicit Level()
+            : requestsRunning(0)
             , waitingRpcs()
         {}
-        friend class Worker;
-        DISALLOW_COPY_AND_ASSIGN(ServiceInfo);
     };
-    Tub<ServiceInfo> services[WireFormat::INVALID_SERVICE];
+    std::vector<Level> levels;
 
     // Worker threads that are currently executing RPCs (no particular order).
     std::vector<Worker*> busyThreads;
@@ -99,25 +86,35 @@ class ServiceManager : Dispatch::Poller {
     // offer a fast wakeup).
     std::vector<Worker*> idleThreads;
 
-    // Number of services that are currently registered.
-    int serviceCount;
+    // Once the number of worker threads reaches this value, new RPCs will
+    // only start executing if that is needed to provide a distributed
+    // deadlock; other RPCs will wait until some threads finish.
+    uint32_t maxCores;
 
-    // Used for testing: if no services are registered, incoming RPCs are
-    // queued here.
+    // Total number of RPCs (across all Levels) in waitingRpcs queues.
+    int rpcsWaiting;
+
+    // Nonzero means save incoming RPCs rather than executing them.
+    // Intended for use in unit tests only.
+    int testingSaveRpcs;
+
+    // Used for testing: if testingSaveRpcs is set, incoming RPCs are
+    // queued here, not sent to workers.
     std::queue<Transport::ServerRpc*> testRpcs;
 
+    static void workerMain(Worker* worker);
     static Syscall *sys;
 
     friend class Worker;
-    DISALLOW_COPY_AND_ASSIGN(ServiceManager);
+    DISALLOW_COPY_AND_ASSIGN(WorkerManager);
 };
 
 /**
  * An object of this class describes a single worker thread and is used
- * for communication between the thread and the ServiceManager poller
+ * for communication between the thread and the WorkerManager poller
  * running in the dispatch thread.  This structure is read-only to the
  * worker except for the #state field.  In principle this class definition
- * should be nested inside ServiceManager; however, we need to make forward
+ * should be nested inside WorkerManager; however, we need to make forward
  * references to it, and C++ doesn't seem to permit forward references to
  * nested classes.
  */
@@ -129,14 +126,12 @@ class Worker {
 
   PRIVATE:
     Context* context;                  /// Shared RAMCloud information.
-    ServiceManager::ServiceInfo *serviceInfo;
-                                       /// Service for the last request
-                                       /// executed by this worker.
     Tub<std::thread> thread;           /// Thread that executes this worker.
   public:
     int threadId;                      /// Identifier for this thread, assigned
                                        /// by the ThreadId class.
     WireFormat::Opcode opcode;         /// Opcode value from most recent RPC.
+    int level;                         /// RpcLevel of most recent RPC.
     Transport::ServerRpc* rpc;         /// RPC being serviced by this worker.
                                        /// NULL means the last RPC given to
                                        /// the worker has been finished and a
@@ -185,10 +180,10 @@ class Worker {
 
     explicit Worker(Context* context)
             : context(context)
-            , serviceInfo(NULL)
             , thread()
             , threadId(ThreadId::get())
             , opcode(WireFormat::Opcode::ILLEGAL_RPC_TYPE)
+            , level(0)
             , rpc(NULL)
             , busyIndex(-1)
             , state(POLLING)
@@ -202,10 +197,10 @@ class Worker {
     ReadThreadingCost_MetricSet::Interval threadWork;
 
   private:
-    friend class ServiceManager;
+    friend class WorkerManager;
     DISALLOW_COPY_AND_ASSIGN(Worker);
 };
 
 }  // namespace RAMCloud
 
-#endif  // RAMCLOUD_SERVICEMANAGER_H
+#endif  // RAMCLOUD_WORKERMANAGER_H

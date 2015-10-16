@@ -60,7 +60,6 @@ class MasterService : public Service {
     virtual ~MasterService();
 
     void dispatch(WireFormat::Opcode opcode, Rpc* rpc);
-    int maxThreads() { return config->master.masterServiceThreadCount; }
 
     /*
      * The following class is used to temporarily disable the servicing of
@@ -326,7 +325,8 @@ class MasterService : public Service {
         Log::Reference resultRef((uint64_t)result);
         objectManager.getLog()->getEntry(resultRef, resultBuffer);
         RpcResult savedRec(resultBuffer);
-        return *((typename LinearizableRpcType::Response*) savedRec.getResp());
+        return *(reinterpret_cast<const typename LinearizableRpcType::Response*>
+                                                        (savedRec.getResp()));
     }
 
     WireFormat::TxPrepare::Vote
@@ -341,7 +341,8 @@ class MasterService : public Service {
         Log::Reference resultRef(result);
         objectManager.getLog()->getEntry(resultRef, resultBuffer);
         RpcResult savedRec(resultBuffer);
-        return *((WireFormat::TxPrepare::Vote*) savedRec.getResp());
+        return *(reinterpret_cast<const WireFormat::TxPrepare::Vote*>
+                                                        (savedRec.getResp()));
     }
 
     /**

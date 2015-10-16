@@ -33,8 +33,8 @@ bool CoordinatorService::forceSynchronousInit = false;
  * Construct a CoordinatorService.
  *
  * \param context
- *      Overall information about the RAMCloud server. A pointer to this
- *      object will be stored at context->coordinatorService.
+ *      Overall information about the RAMCloud server.  The new service
+ *      will be registered in this context.
  * \param deadServerTimeout
  *      Servers are presumed dead if they cannot respond to a ping request
  *      in this many milliseconds.
@@ -45,7 +45,6 @@ bool CoordinatorService::forceSynchronousInit = false;
 CoordinatorService::CoordinatorService(Context* context,
                                        uint32_t deadServerTimeout,
                                        bool unitTesting,
-                                       uint32_t maxThreads,
                                        bool neverKill)
     : context(context)
     , serverList(context->coordinatorServerList)
@@ -55,15 +54,14 @@ CoordinatorService::CoordinatorService(Context* context,
     , leaseManager(context)
     , runtimeOptions()
     , recoveryManager(context, tableManager, &runtimeOptions)
-    , threadLimit(maxThreads)
     , forceServerDownForTesting(false)
     , neverKill(neverKill)
     , initFinished(false)
     , backupConfig()
     , masterConfig()
 {
+    context->services[WireFormat::COORDINATOR_SERVICE] = this;
     context->recoveryManager = &recoveryManager;
-    context->coordinatorService = this;
 
     // Invoke the rest of initialization in a separate thread (except during
     // unit tests). This is needed because some of the recovery operations
@@ -81,6 +79,7 @@ CoordinatorService::CoordinatorService(Context* context,
 
 CoordinatorService::~CoordinatorService()
 {
+    context->services[WireFormat::COORDINATOR_SERVICE] = NULL;
     recoveryManager.halt();
 }
 

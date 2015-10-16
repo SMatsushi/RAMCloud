@@ -230,11 +230,11 @@ UnackedRpcResults::checkDuplicate(uint64_t clientId,
     Client* client;
 
     if (leaseExpiration &&
-            leaseExpiration < context->masterService->clusterTime) {
+            leaseExpiration < context->getMasterService()->clusterTime) {
         //contact coordinator for lease expiration and clusterTime.
         WireFormat::ClientLease lease =
             CoordinatorClient::getLeaseInfo(context, clientId);
-        context->masterService->updateClusterTime(lease.timestamp);
+        context->getMasterService()->updateClusterTime(lease.timestamp);
         if (lease.leaseId == 0) {
             throw ExpiredLeaseException(HERE);
         }
@@ -480,7 +480,7 @@ UnackedRpcResults::cleanByTimeout()
              ++i, ++it) {
             Client* client = it->second;
             if (client->leaseExpiration <=
-                    context->masterService->clusterTime) {
+                    context->getMasterService()->clusterTime) {
                 victims.push_back(it->first);
             }
         }
@@ -507,7 +507,7 @@ UnackedRpcResults::cleanByTimeout()
     }
 
     if (maxClusterTime)
-        context->masterService->updateClusterTime(maxClusterTime);
+        context->getMasterService()->updateClusterTime(maxClusterTime);
 }
 
 /**
@@ -534,7 +534,7 @@ UnackedRpcResults::Cleaner::handleTimerEvent()
 
     // Run once per 1/10 of lease term to keep expected garbage ~ 5%.
     this->start(Cycles::rdtsc()+Cycles::fromNanoseconds(
-            LeaseCommon::LEASE_TERM_US * 100));
+            LeaseCommon::LEASE_TERM_NS / 10));
 }
 
 /**

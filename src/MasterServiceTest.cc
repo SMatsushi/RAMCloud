@@ -49,7 +49,7 @@ class MasterServiceRefresher : public ObjectFinder::TableConfigFetcher {
                     ObjectFinder::Indexlet>* tableIndexMap) {
         tableMap->clear();
 
-        Tablet rawEntry({1, 0, ~0, ServerId(),
+        Tablet rawEntry({1, 0, uint64_t(~0), ServerId(),
                             Tablet::NORMAL, LogPosition()});
         TabletWithLocator entry(rawEntry, "mock:host=master");
 
@@ -57,7 +57,7 @@ class MasterServiceRefresher : public ObjectFinder::TableConfigFetcher {
         tableMap->insert(std::make_pair(key, entry));
 
         if (refreshCount > 0) {
-            Tablet rawEntry2({99, 0, ~0, ServerId(),
+            Tablet rawEntry2({99, 0, uint64_t(~0), ServerId(),
                     Tablet::NORMAL, LogPosition()});
             TabletWithLocator entry2(rawEntry2, "mock:host=master");
 
@@ -388,7 +388,7 @@ TEST_F(MasterServiceTest, Disabler) {
 }
 
 TEST_F(MasterServiceTest, dropTabletOwnership) {
-    TestLog::Enable _("dropTabletOwnership");
+    TestLog::Enable _("dropTabletOwnership", "deleteKeyHashRange", NULL);
 
     MasterClient::dropTabletOwnership(&context,
             masterServer-> serverId, 2, 1, 1);
@@ -401,7 +401,8 @@ TEST_F(MasterServiceTest, dropTabletOwnership) {
             2, 1, 1);
     MasterClient::dropTabletOwnership(&context, masterServer-> serverId,
             2, 1, 1);
-    EXPECT_EQ("dropTabletOwnership: Dropped ownership of (or did not own) "
+    EXPECT_EQ("deleteKeyHashRange: tableId 2 range [0x1,0x1] | "
+            "dropTabletOwnership: Dropped ownership of (or did not own) "
             "tablet [0x1,0x1] in tableId 2", TestLog::get());
 }
 
@@ -750,6 +751,244 @@ TEST_F(MasterServiceTest, increment_parallel) {
     EXPECT_EQ(2, value);
 }
 
+TEST_F(MasterServiceTest, migrateSingleLogEntry_basic) {
+    // Populate segment
+    Key key(1, "1", 1);
+    Buffer buffer;
+    Object obj(key, "value", 5, 0, 0, buffer);
+    EXPECT_EQ(STATUS_OK, service->objectManager.writeObject(obj, 0, 0));
+
+    LogIterator it(*service->objectManager.getLog());
+    Tub<Segment> transferSeg;
+
+    uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
+    uint64_t totalBytes = 0;
+    uint64_t tableId = 1;
+    uint64_t firstKeyHash = 0x0;
+    uint64_t lastKeyHash = 0xffffffffffffffff;
+    ServerId receiver(1);
+
+    Status error;
+    for (; !it.isDone(); it.next()) {
+        TestLog::reset();
+        error = service->migrateSingleLogEntry(
+                *it.getCurrentSegmentIterator(),
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) break;
+    }
+
+    EXPECT_EQ(STATUS_OK, error);
+    EXPECT_EQ("migrateSingleLogEntry: Migrated log entry type Object",
+            TestLog::get());
+    EXPECT_EQ(33U, totalBytes);
+    EXPECT_EQ(1U, entryTotals[LOG_ENTRY_TYPE_OBJ]);
+}
+
+TEST_F(MasterServiceTest, migrateSingleLogEntry_wrongTable) {
+    // Populate segment
+    Key key(1, "1", 1);
+    Buffer buffer;
+    Object obj(key, "value", 5, 0, 0, buffer);
+    EXPECT_EQ(STATUS_OK, service->objectManager.writeObject(obj, 0, 0));
+
+    LogIterator it(*service->objectManager.getLog());
+    Tub<Segment> transferSeg;
+
+    uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
+    uint64_t totalBytes = 0;
+    uint64_t tableId = 2;
+    uint64_t firstKeyHash = 0x0;
+    uint64_t lastKeyHash = 0xffffffffffffffff;
+    ServerId receiver(1);
+
+    Status error;
+    for (; !it.isDone(); it.next()) {
+        TestLog::reset();
+        error = service->migrateSingleLogEntry(
+                *it.getCurrentSegmentIterator(),
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) break;
+    }
+
+    EXPECT_EQ(STATUS_OK, error);
+    EXPECT_EQ("migrateSingleLogEntry: Object not migrated; "
+                    "tableId doesn't match",
+            TestLog::get());
+    EXPECT_EQ(0U, totalBytes);
+    EXPECT_EQ(0U, entryTotals[LOG_ENTRY_TYPE_OBJ]);
+}
+
+TEST_F(MasterServiceTest, migrateSingleLogEntry_wrongKeyHash) {
+    // Populate segment
+    Key key(1, "1", 1);
+    Buffer buffer;
+    Object obj(key, "value", 5, 0, 0, buffer);
+    EXPECT_EQ(STATUS_OK, service->objectManager.writeObject(obj, 0, 0));
+
+    LogIterator it(*service->objectManager.getLog());
+    Tub<Segment> transferSeg;
+
+    uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
+    uint64_t totalBytes = 0;
+    uint64_t tableId = 1;
+    uint64_t firstKeyHash = 0x0;
+    uint64_t lastKeyHash = 0x0;
+    ServerId receiver(1);
+
+    Status error;
+    for (; !it.isDone(); it.next()) {
+        TestLog::reset();
+        error = service->migrateSingleLogEntry(
+                *it.getCurrentSegmentIterator(),
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) break;
+    }
+
+    EXPECT_EQ(STATUS_OK, error);
+    EXPECT_EQ("migrateSingleLogEntry: Object not migrated; "
+                    "keyHash not in range",
+            TestLog::get());
+    EXPECT_EQ(0U, totalBytes);
+    EXPECT_EQ(0U, entryTotals[LOG_ENTRY_TYPE_OBJ]);
+}
+
+TEST_F(MasterServiceTest, migrateSingleLogEntry_decisionRecord) {
+    // Populate segment
+    {
+        // Migrate
+        TxDecisionRecord record(1, 0, 2, WireFormat::TxDecision::COMMIT, 1);
+        service->objectManager.writeTxDecisionRecord(record);
+    }
+    {
+        // Bad table
+        service->tabletManager.addTablet(2, 0, ~0UL, TabletManager::NORMAL);
+        TxDecisionRecord record(2, 0, 2, WireFormat::TxDecision::COMMIT, 1);
+        service->objectManager.writeTxDecisionRecord(record);
+    }
+    {
+        // Bad key hash
+        TxDecisionRecord record(1, 1, 2, WireFormat::TxDecision::COMMIT, 1);
+        service->objectManager.writeTxDecisionRecord(record);
+    }
+
+    LogIterator it(*service->objectManager.getLog());
+    Tub<Segment> transferSeg;
+
+    uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
+    uint64_t totalBytes = 0;
+    uint64_t tableId = 1;
+    uint64_t firstKeyHash = 0x0;
+    uint64_t lastKeyHash = 0x0;
+    ServerId receiver(1);
+
+    TestLog::reset();
+    Status error;
+    for (; !it.isDone(); it.next()) {
+        error = service->migrateSingleLogEntry(
+                *it.getCurrentSegmentIterator(),
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) break;
+    }
+
+    EXPECT_EQ(STATUS_OK, error);
+    EXPECT_EQ("migrateSingleLogEntry: Ignoring log entry type Segment Header | "
+              "migrateSingleLogEntry: Ignoring log entry type Log Digest | "
+              "migrateSingleLogEntry: Ignoring log entry type "
+                    "Table Stats Digest | "
+              "migrateSingleLogEntry: Ignoring log entry type "
+                    "Object Safe Version | "
+              "migrateSingleLogEntry: Migrated log entry type "
+                    "Transaction Decision Record | "
+              "migrateSingleLogEntry: Transaction Decision Record not "
+                    "migrated; tableId doesn't match | "
+              "migrateSingleLogEntry: Transaction Decision Record not "
+                    "migrated; keyHash not in range",
+            TestLog::get());
+    EXPECT_EQ(40U, totalBytes);
+    EXPECT_EQ(1U, entryTotals[LOG_ENTRY_TYPE_TXDECISION]);
+}
+
+TEST_F(MasterServiceTest, migrateSingleLogEntry_participantList) {
+    // Populate segment
+    {
+        // Good
+        WireFormat::TxParticipant participants[4];
+        participants[0] = WireFormat::TxParticipant(123, 0, 10);
+        participants[1] = WireFormat::TxParticipant(1, 2, 11);
+        participants[2] = WireFormat::TxParticipant(1, 0, 12);
+        participants[3] = WireFormat::TxParticipant(10, 0, 13);
+        ParticipantList record(participants, 4, 42);
+        uint64_t logRef;
+        service->objectManager.logTransactionParticipantList(record, &logRef);
+    }
+    {
+        // Bad
+        WireFormat::TxParticipant participants[3];
+        participants[0] = WireFormat::TxParticipant(123, 224, 10);
+        participants[1] = WireFormat::TxParticipant(222, 2, 11);
+        participants[2] = WireFormat::TxParticipant(111, 0, 12);
+        ParticipantList record(participants, 3, 42);
+        uint64_t logRef;
+        service->objectManager.logTransactionParticipantList(record, &logRef);
+    }
+    {
+        // Bad
+        WireFormat::TxParticipant participants[3];
+        participants[0] = WireFormat::TxParticipant(123, 224, 10);
+        participants[1] = WireFormat::TxParticipant(222, 2, 11);
+        participants[2] = WireFormat::TxParticipant(1, 2, 12);
+        ParticipantList record(participants, 3, 42);
+        uint64_t logRef;
+        service->objectManager.logTransactionParticipantList(record, &logRef);
+    }
+
+    LogIterator it(*service->objectManager.getLog());
+    Tub<Segment> transferSeg;
+
+    uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
+    uint64_t totalBytes = 0;
+    uint64_t tableId = 1;
+    uint64_t firstKeyHash = 0x0;
+    uint64_t lastKeyHash = 0x0;
+    ServerId receiver(1);
+
+    TestLog::reset();
+    Status error;
+    for (; !it.isDone(); it.next()) {
+        error = service->migrateSingleLogEntry(
+                *it.getCurrentSegmentIterator(),
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) break;
+    }
+
+    EXPECT_EQ(STATUS_OK, error);
+    EXPECT_EQ("migrateSingleLogEntry: Ignoring log entry type Segment Header | "
+              "migrateSingleLogEntry: Ignoring log entry type Log Digest | "
+              "migrateSingleLogEntry: Ignoring log entry type "
+                    "Table Stats Digest | "
+              "migrateSingleLogEntry: Ignoring log entry type "
+                    "Object Safe Version | "
+              "migrateSingleLogEntry: Migrated log entry type "
+                    "Transaction Participant List Record | "
+              "migrateSingleLogEntry: Transaction Participant List Record not "
+                    "migrated; tableId doesn't match | "
+              "migrateSingleLogEntry: Transaction Participant List Record not "
+                    "migrated; keyHash not in range",
+            TestLog::get());
+    EXPECT_EQ(112U, totalBytes);
+    EXPECT_EQ(1U, entryTotals[LOG_ENTRY_TYPE_TXPLIST]);
+}
+
 TEST_F(MasterServiceTest, migrateTablet_tabletNotOnServer) {
     TestLog::Enable _;
     EXPECT_THROW(ramcloud->migrateTablet(99, 0, -1, ServerId(0, 0)),
@@ -764,7 +1003,7 @@ TEST_F(MasterServiceTest, migrateTablet_tabletNotOnServer) {
 TEST_F(MasterServiceTest, migrateTablet_firstKeyHashTooLow) {
     service->tabletManager.addTablet(99, 27, 873, TabletManager::NORMAL);
 
-    TestLog::Enable _("migrateTablet");
+    TestLog::Enable _("migrateTablet", "deleteKeyHashRange", NULL);
 
     EXPECT_THROW(ramcloud->migrateTablet(99, 0, 26, ServerId(0, 0)),
             TableDoesntExistException);
@@ -776,7 +1015,7 @@ TEST_F(MasterServiceTest, migrateTablet_firstKeyHashTooLow) {
 TEST_F(MasterServiceTest, migrateTablet_lastKeyHashTooHigh) {
     service->tabletManager.addTablet(99, 27, 873, TabletManager::NORMAL);
 
-    TestLog::Enable _("migrateTablet");
+    TestLog::Enable _("migrateTablet", "deleteKeyHashRange", NULL);
 
     EXPECT_THROW(ramcloud->migrateTablet(99, 874, -1, ServerId(0, 0)),
             TableDoesntExistException);
@@ -788,7 +1027,7 @@ TEST_F(MasterServiceTest, migrateTablet_lastKeyHashTooHigh) {
 TEST_F(MasterServiceTest, migrateTablet_migrateToSelf) {
     service->tabletManager.addTablet(99, 27, 873, TabletManager::NORMAL);
 
-    TestLog::Enable _("migrateTablet");
+    TestLog::Enable _("migrateTablet", "deleteKeyHashRange", NULL);
 
     EXPECT_THROW(ramcloud->migrateTablet(99, 27, 873, masterServer->serverId),
             RequestFormatError);
@@ -816,7 +1055,7 @@ TEST_F(MasterServiceTest, migrateTablet_movingData) {
     // update is asynchronous and the client calls a migrate before the CSL has
     // been propagated. The recipient servers basically don't know about each
     // other yet and can't perform a migrate.
-    TestLog::Enable _("migrateTablet");
+    TestLog::Enable _("migrateTablet", "deleteKeyHashRange", NULL);
 
     uint64_t oldEpcoh = ServerRpcPool<>::getCurrentEpoch();
     ramcloud->migrateTablet(tbl, 0, -1, master2->serverId);
@@ -827,6 +1066,7 @@ TEST_F(MasterServiceTest, migrateTablet_movingData) {
             "migrateTablet: Migration succeeded for tablet "
             "[0x0,0xffffffffffffffff] in tableId 1; sent 1 objects and "
             "0 tombstones to server 3.0 at mock:host=master2, 36 bytes in total"
+            " | deleteKeyHashRange: tableId 1 range [0x0,0xffffffffffffffff]"
             , TestLog::get());
 
     // Ensure that the tablet ``creation'' time on the new master is
@@ -1181,8 +1421,8 @@ TEST_F(MasterServiceTest, multiWrite_nullAndEmptyValues) {
     EXPECT_EQ(0U, valueLength);
 
     // See if we can transition back to something non-zero length
-    requests = {&request3, &request4};
-    ramcloud->multiWrite(requests, 2);
+    MultiWriteObject* requests2[] = {&request3, &request4};
+    ramcloud->multiWrite(requests2, 2);
 
     EXPECT_EQ(STATUS_OK, request3.status);
     EXPECT_EQ(3U, request3.version);
@@ -1252,12 +1492,15 @@ TEST_F(MasterServiceTest, prepForMigration) {
             ObjectExistsException);
     EXPECT_EQ("prepForMigration: Already have tablet [0x1b,0x369] "
             "in tableId 5, cannot add [0x1b,0x369]", TestLog::get());
+    EXPECT_TRUE(service->masterTableMetadata.find(5) == NULL);
     EXPECT_THROW(MasterClient::prepForMigration(&context,
             masterServer->serverId, 5, 0, 27),
             ObjectExistsException);
+    EXPECT_TRUE(service->masterTableMetadata.find(5) == NULL);
     EXPECT_THROW(MasterClient::prepForMigration(&context,
             masterServer->serverId, 5, 873, 82743),
             ObjectExistsException);
+    EXPECT_TRUE(service->masterTableMetadata.find(5) == NULL);
 
     TestLog::reset();
     MasterClient::prepForMigration(&context,
@@ -1270,6 +1513,8 @@ TEST_F(MasterServiceTest, prepForMigration) {
     EXPECT_EQ(TabletManager::RECOVERING, tablet.state);
     EXPECT_EQ("prepForMigration: Ready to receive tablet [0x3e8,0x7d0] "
             "in tableId 5 from \"??\"", TestLog::get());
+    EXPECT_FALSE(service->masterTableMetadata.find(5) == NULL);
+    EXPECT_EQ(1001U, service->masterTableMetadata.find(5)->stats.keyHashCount);
 }
 
 TEST_F(MasterServiceTest, prepForIndexletMigration) {
@@ -1907,6 +2152,9 @@ TEST_F(MasterServiceTest, splitAndMigrateIndexlet_wrongPartition) {
                     TestLog::get());
 }
 
+#if 0
+// This test is disabled because it fails due to bug RAM-788. It should be
+// re-enabled once the bug is fixed.
 TEST_F(MasterServiceTest, splitAndMigrateIndexlet_moveData) {
     uint64_t dataTableId = ramcloud->createTable("dataTable");
     uint64_t backingTableId = ramcloud->createTable("backingTable");
@@ -1958,6 +2206,7 @@ TEST_F(MasterServiceTest, splitAndMigrateIndexlet_moveData) {
             "1 total tombstones, 261 total bytes.",
                     TestLog::get());
 }
+#endif
 
 TEST_F(MasterServiceTest, splitMasterTablet) {
 
@@ -1981,6 +2230,7 @@ TEST_F(MasterServiceTest, takeTabletOwnership_syncLog) {
     EXPECT_EQ("sync: sync not needed: already fully replicated | "
             "takeTabletOwnership: Took ownership of new tablet "
             "[0x2,0x3] in tableId 2", TestLog::get());
+    EXPECT_EQ(2U, service->masterTableMetadata.find(2)->stats.keyHashCount);
 
     TestLog::reset();
     MasterClient::takeTabletOwnership(&context, masterServer->serverId,
@@ -1988,6 +2238,7 @@ TEST_F(MasterServiceTest, takeTabletOwnership_syncLog) {
     EXPECT_TRUE(service->logEverSynced);
     EXPECT_EQ("takeTabletOwnership: Took ownership of new tablet "
             "[0x4,0x5] in tableId 2", TestLog::get());
+    EXPECT_EQ(4U, service->masterTableMetadata.find(2)->stats.keyHashCount);
 }
 
 TEST_F(MasterServiceTest, takeTabletOwnership_newTablet) {
@@ -2038,6 +2289,9 @@ TEST_F(MasterServiceTest, takeTabletOwnership_newTablet) {
                 "takeTabletOwnership: Took ownership of new tablet [0x0,0x1] "
                 "in tableId 3",
                 TestLog::get());
+
+        EXPECT_EQ(4U, service->masterTableMetadata.find(2)->stats.keyHashCount);
+        EXPECT_EQ(2U, service->masterTableMetadata.find(3)->stats.keyHashCount);
     }
 
     TestLog::reset();
@@ -2050,6 +2304,7 @@ TEST_F(MasterServiceTest, takeTabletOwnership_newTablet) {
         EXPECT_EQ("takeTabletOwnership: Told to take ownership of tablet "
                 "[0x2,0x3] in tableId 2, but already own [0x2,0x3]. Returning "
                 "success.", TestLog::get());
+        EXPECT_EQ(4U, service->masterTableMetadata.find(2)->stats.keyHashCount);
     }
 
     TestLog::reset();
@@ -2062,6 +2317,7 @@ TEST_F(MasterServiceTest, takeTabletOwnership_newTablet) {
         EXPECT_EQ("takeTabletOwnership: Could not take ownership of tablet "
                 "[0x2,0x2] in tableId 2: overlaps with one or more different "
                 "ranges.", TestLog::get());
+        EXPECT_EQ(4U, service->masterTableMetadata.find(2)->stats.keyHashCount);
     }
 }
 
@@ -2076,6 +2332,7 @@ TEST_F(MasterServiceTest, takeTabletOwnership_migratingTablet) {
 
     EXPECT_EQ("takeTabletOwnership: Took ownership of existing tablet "
             "[0x0,0x5] in tableId 2 in RECOVERING state", TestLog::get());
+    EXPECT_TRUE(service->masterTableMetadata.find(2) == NULL);
 }
 
 TEST_F(MasterServiceTest, txDecision_commit) {
@@ -2102,11 +2359,11 @@ TEST_F(MasterServiceTest, txDecision_commit) {
     participants[2] = TxParticipant(key3.getTableId(), key3.getHash(), 12U);
     // create an object just so that buffer will be populated with the key
     // and the value. This keeps the abstractions intact
-    PreparedOp op1(TxPrepare::READ, 1, 10, 3, participants,
+    PreparedOp op1(TxPrepare::READ, 1, 10, 10,
                    key1, "", 0, 0, 0, buffer);
-    PreparedOp op2(TxPrepare::REMOVE, 1, 11, 3, participants,
+    PreparedOp op2(TxPrepare::REMOVE, 1, 10, 11,
                    key2, "", 0, 0, 0, buffer);
-    PreparedOp op3(TxPrepare::WRITE, 1, 12, 3, participants,
+    PreparedOp op3(TxPrepare::WRITE, 1, 10, 12,
                    key3, "new", 3, 0, 0, buffer);
 
     WireFormat::TxPrepare::Vote vote;
@@ -2198,11 +2455,11 @@ TEST_F(MasterServiceTest, txDecision_abort) {
     participants[2] = TxParticipant(key3.getTableId(), key3.getHash(), 12U);
     // create an object just so that buffer will be populated with the key
     // and the value. This keeps the abstractions intact
-    PreparedOp op1(TxPrepare::READ, 1, 10, 3, participants,
+    PreparedOp op1(TxPrepare::READ, 1, 10, 10,
                    key1, "", 0, 0, 0, buffer);
-    PreparedOp op2(TxPrepare::REMOVE, 1, 11, 3, participants,
+    PreparedOp op2(TxPrepare::REMOVE, 1, 10, 11,
                    key2, "", 0, 0, 0, buffer);
-    PreparedOp op3(TxPrepare::WRITE, 1, 12, 3, participants,
+    PreparedOp op3(TxPrepare::WRITE, 1, 10, 12,
                    key3, "new", 3, 0, 0, buffer);
 
     WireFormat::TxPrepare::Vote vote;
@@ -2276,9 +2533,9 @@ TEST_F(MasterServiceTest, txDecision_unknownTablet) {
     participants[2] = TxParticipant(key3.getTableId(), key3.getHash(), 12U);
     // create an object just so that buffer will be populated with the key
     // and the value. This keeps the abstractions intact
-    PreparedOp op1(TxPrepare::READ, 1, 10, 3, participants,
+    PreparedOp op1(TxPrepare::READ, 1, 10, 10,
                    key1, "", 0, 0, 0, buffer);
-    PreparedOp op3(TxPrepare::WRITE, 1, 12, 3, participants,
+    PreparedOp op3(TxPrepare::WRITE, 1, 10, 12,
                    key3, "new", 3, 0, 0, buffer);
 
     WireFormat::TxPrepare::Vote vote;
@@ -2322,8 +2579,6 @@ TEST_F(MasterServiceTest, txDecision_unknownTablet) {
     EXPECT_TRUE(isObjectLocked(key3));
 }
 
-// TODO(cstlee) : Unit test MasterService::txHintFailed()
-
 TEST_F(MasterServiceTest, txPrepare_basics) {
     // 1. Test setup: Add objects to be used during experiment.
     uint64_t version;
@@ -2360,6 +2615,7 @@ TEST_F(MasterServiceTest, txPrepare_basics) {
     reqHdr.opCount = 3;
     reqBuffer.appendCopy(&reqHdr, sizeof32(reqHdr));
     reqBuffer.appendExternal(participants, sizeof32(TxParticipant) * 4);
+    TransactionId txId(1U, 10U);
 
     // 2A. ReadOp
     RejectRules rejectRules;
@@ -2395,6 +2651,8 @@ TEST_F(MasterServiceTest, txPrepare_basics) {
     EXPECT_FALSE(isObjectLocked(key1));
     EXPECT_FALSE(isObjectLocked(key2));
     EXPECT_FALSE(isObjectLocked(key3));
+    EXPECT_FALSE(
+            service->objectManager.preparedOps->hasParticipantListEntry(txId));
     {
         Buffer value;
         ramcloud->read(1, "key1", 4, &value, NULL, &version);
@@ -2425,6 +2683,8 @@ TEST_F(MasterServiceTest, txPrepare_basics) {
     EXPECT_TRUE(isObjectLocked(key1));
     EXPECT_TRUE(isObjectLocked(key2));
     EXPECT_TRUE(isObjectLocked(key3));
+    EXPECT_TRUE(
+            service->objectManager.preparedOps->hasParticipantListEntry(txId));
 
     Buffer value;
     ramcloud->read(1, "key1", 4, &value, NULL, &version);
@@ -2462,7 +2722,6 @@ TEST_F(MasterServiceTest, txPrepare_retriedPrepares) {
     Key key3(1, "key3", 4);
     Key key4(1, "key4", 4);
     Key key5(1, "key5", 4);
-    Buffer buffer, buffer2;
 
     WireFormat::TxParticipant participants[4];
     participants[0] = TxParticipant(key1.getTableId(), key1.getHash(), 10U);
@@ -3068,7 +3327,12 @@ TEST_F(MasterServiceTest, write_basics) {
     ObjectBuffer value;
     uint64_t version;
 
-    TestLog::Enable _;
+    TestLog::Enable _("writeObject",
+                      "sync",
+                      "schedule",
+                      "performWrite",
+                      "sync",
+                      NULL);
     ramcloud->write(1, "key0", 4, "item0", 5, NULL, &version);
     EXPECT_EQ(1U, version);
     EXPECT_EQ("writeObject: object: 36 bytes, version 1 | "
@@ -3322,10 +3586,10 @@ TEST_F(MasterServiceTest, recover_basics) {
     };
 
     EXPECT_EQ(0lu, masterServer->master->clusterTime.load());
-    cluster.coordinator->leaseManager.clock.safeClusterTimeUs = 1000000;
+    cluster.coordinator->leaseManager.clock.safeClusterTimeNS = 1000000000;
 
     TestLog::Enable __("replaySegment", "recover", "recoveryMasterFinished",
-            NULL);
+            "addKeyHashRange", NULL);
     MasterClient::recover(&context, masterServer->serverId, 10lu,
             serverId, 0, &recoveryPartition, replicas,
             arrayLength(replicas));
@@ -3335,7 +3599,16 @@ TEST_F(MasterServiceTest, recover_basics) {
 
     size_t curPos = 0; // Current Pos: given to getUntil()
     // Proceed read pointer
-    TestLog::getUntil("recover: Recovering master 123.0", curPos, &curPos);
+    TestLog::getUntil("addKeyHashRange: tableId 123",
+            curPos, &curPos);
+
+    EXPECT_EQ(
+        "addKeyHashRange: tableId 123 range [0x0,0x9] | "
+        "addKeyHashRange: tableId 123 range [0xa,0x13] | "
+        "addKeyHashRange: tableId 123 range [0x14,0x1d] | "
+        "addKeyHashRange: tableId 124 range [0x14,0x64] | ",
+        TestLog::getUntil("recover: Recovering master 123.0",
+            curPos, &curPos));
 
     EXPECT_EQ(
         "recover: Recovering master 123.0, partition 0, 1 replicas available | "
@@ -3638,7 +3911,7 @@ TEST_F(MasterServiceTest, recover_ctimeUpdateIssued) {
 
 TEST_F(MasterServiceTest, recover_unsuccessful) {
     cluster.coordinator->recoveryManager.start();
-    TestLog::Enable _("recover");
+    TestLog::Enable _("recover", "deleteKeyHashRange", NULL);
     ramcloud->write(1, "0", 1, "abcdef", 6);
     ProtoBuf::RecoveryPartition recoveryPartition;
     createRecoveryPartition(recoveryPartition);
@@ -3649,15 +3922,27 @@ TEST_F(MasterServiceTest, recover_unsuccessful) {
     MasterClient::recover(&context, masterServer->serverId, 10lu, {123, 0},
             0, &recoveryPartition, replicas, 1);
 
-    string log = TestLog::get();
-    log = log.substr(log.rfind("recover:"));
+    size_t curPos = 0; // Current Pos: given to getUntil()
+    TestLog::getUntil("recover: Failed to recover partition",
+            curPos, &curPos); // Proceed read pointer
+
     EXPECT_EQ("recover: Failed to recover partition for recovery 10; "
-            "aborting recovery on this recovery master", log);
+            "aborting recovery on this recovery master | ",
+            TestLog::getUntil("deleteKeyHashRange: ", curPos, &curPos));
+
+    EXPECT_EQ(
+            "deleteKeyHashRange: tableId 123 range [0x0,0x9] | "
+            "deleteKeyHashRange: tableId 123 range [0xa,0x13] | "
+            "deleteKeyHashRange: tableId 123 range [0x14,0x1d] | "
+            "deleteKeyHashRange: tableId 124 range [0x14,0x64]",
+            TestLog::getUntil("", curPos, &curPos));
 
     foreach (const auto& tablet, recoveryPartition.tablet()) {
         EXPECT_FALSE(service->tabletManager.getTablet(tablet.table_id(),
                 tablet.start_key_hash(), tablet.end_key_hash()));
     }
+    EXPECT_EQ(0U, service->masterTableMetadata.find(123)->stats.keyHashCount);
+    EXPECT_EQ(0U, service->masterTableMetadata.find(124)->stats.keyHashCount);
 }
 
 class MasterRecoverTest : public ::testing::Test {

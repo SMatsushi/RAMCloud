@@ -44,6 +44,7 @@ TESTS_SRCFILES := \
 		  src/CleanableSegmentManagerTest.cc \
 		  src/ClientExceptionTest.cc \
 		  src/ClientLeaseTest.cc \
+		  src/ClientTransactionManagerTest.cc \
 		  src/ClientTransactionTaskTest.cc \
 		  src/ClusterMetricsTest.cc \
 		  src/CRamCloudTest.cc \
@@ -143,7 +144,6 @@ TESTS_SRCFILES := \
 		  src/ServerTest.cc \
 		  src/ServerTrackerTest.cc \
 		  src/ServiceLocatorTest.cc \
-		  src/ServiceManagerTest.cc \
 		  src/ServiceMaskTest.cc \
 		  src/ServiceTest.cc \
 		  src/SessionAlarmTest.cc \
@@ -179,6 +179,7 @@ TESTS_SRCFILES := \
 		  src/WallTimeTest.cc \
 		  src/WindowTest.cc \
 		  src/WireFormatTest.cc \
+		  src/WorkerManagerTest.cc \
 		  src/WorkerSessionTest.cc \
 		  src/WorkerTimerTest.cc \
 		  src/RamCloudTest.cc \

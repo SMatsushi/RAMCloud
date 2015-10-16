@@ -46,6 +46,7 @@ SHARED_SRCFILES := \
 		   src/CacheTrace.cc \
 		   src/ClientException.cc \
 		   src/ClientLease.cc \
+		   src/ClientTransactionManager.cc \
 		   src/ClientTransactionTask.cc \
 		   src/Context.cc \
 		   src/CoordinatorClient.cc \
@@ -140,7 +141,6 @@ SHARED_SRCFILES := \
 		   src/ServerRpcPool.cc \
 		   src/Service.cc \
 		   src/ServiceLocator.cc \
-		   src/ServiceManager.cc \
 		   src/SessionAlarm.cc \
 		   src/SideLog.cc \
 		   src/SpinLock.cc \
@@ -166,6 +166,7 @@ SHARED_SRCFILES := \
 		   src/Util.cc \
 		   src/WallTime.cc \
 		   src/WireFormat.cc \
+		   src/WorkerManager.cc \
 		   src/WorkerSession.cc \
 		   src/WorkerTimer.cc \
 		   $(INFINIBAND_SRCFILES) \

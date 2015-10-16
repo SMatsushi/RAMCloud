@@ -32,12 +32,13 @@
 #include "RawMetrics.h"
 #include "Segment.h"
 #include "ServerRpcPool.h"
-#include "ServiceManager.h"
 #include "ShortMacros.h"
+#include "TableStats.h"
 #include "TimeTrace.h"
 #include "Transport.h"
 #include "Tub.h"
 #include "WallTime.h"
+#include "WorkerManager.h"
 
 namespace RAMCloud {
 
@@ -67,7 +68,8 @@ MasterService::Replica::Replica(uint64_t backupId, uint64_t segmentId,
  * Construct a MasterService.
  *
  * \param context
- *      Overall information about the RAMCloud server or client.
+ *      Overall information about the RAMCloud server or client. The new
+ *      service will be registered in this context.
  * \param config
  *      Contains various parameters that configure the operation of
  *      this server.
@@ -96,10 +98,12 @@ MasterService::MasterService(Context* context, const ServerConfig* config)
     , masterTableMetadata()
     , maxResponseRpcLen(Transport::MAX_RPC_LEN)
 {
+    context->services[WireFormat::MASTER_SERVICE] = this;
 }
 
 MasterService::~MasterService()
 {
+    context->services[WireFormat::MASTER_SERVICE] = NULL;
 }
 
 // See Server::dispatch.
@@ -313,8 +317,12 @@ MasterService::dropTabletOwnership(
         WireFormat::DropTabletOwnership::Response* respHdr,
         Rpc* rpc)
 {
-    tabletManager.deleteTablet(reqHdr->tableId,
-            reqHdr->firstKeyHash, reqHdr->lastKeyHash);
+    bool removed = tabletManager.deleteTablet(reqHdr->tableId,
+                   reqHdr->firstKeyHash, reqHdr->lastKeyHash);
+    if (removed) {
+        TableStats::deleteKeyHashRange(&masterTableMetadata, reqHdr->tableId,
+                reqHdr->firstKeyHash, reqHdr->lastKeyHash);
+    }
 
     // Ensure that the ObjectManager never returns objects from this deleted
     // tablet again.
@@ -842,9 +850,12 @@ MasterService::migrateSingleLogEntry(
     LogEntryType type = it.getType();
     if (type != LOG_ENTRY_TYPE_OBJ &&
         type != LOG_ENTRY_TYPE_OBJTOMB &&
-        type != LOG_ENTRY_TYPE_TXDECISION)
+        type != LOG_ENTRY_TYPE_TXDECISION &&
+        type != LOG_ENTRY_TYPE_TXPLIST)
     {
         // We aren't interested in any other types.
+        TEST_LOG("Ignoring log entry type %s",
+                LogEntryTypeHelpers::toString(type));
         return STATUS_OK;
     }
 
@@ -861,25 +872,44 @@ MasterService::migrateSingleLogEntry(
         TxDecisionRecord record(buffer);
         entryTableId = record.getTableId();
         entryKeyHash = record.getKeyHash();
+    } else if (type == LOG_ENTRY_TYPE_TXPLIST) {
+        ParticipantList participantList(buffer);
+        for (uint64_t i = 0; i < participantList.header.participantCount; ++i) {
+            entryTableId = participantList.participants[i].tableId;
+            entryKeyHash = participantList.participants[i].keyHash;
+            if (entryTableId != tableId)
+                continue;
+            if (entryKeyHash < firstKeyHash || entryKeyHash > lastKeyHash)
+                continue;
+            break;
+        }
     }
 
     // Skip if not applicable.
-    if (entryTableId != tableId)
+    if (entryTableId != tableId) {
+        TEST_LOG("%s not migrated; tableId doesn't match",
+                LogEntryTypeHelpers::toString(type));
         return STATUS_OK;
+    }
 
     // TODO(stutsman) May want to hold back on computing hashes until here?
 
-    if (entryKeyHash < firstKeyHash || entryKeyHash > lastKeyHash)
+    if (entryKeyHash < firstKeyHash || entryKeyHash > lastKeyHash) {
+        TEST_LOG("%s not migrated; keyHash not in range",
+                LogEntryTypeHelpers::toString(type));
         return STATUS_OK;
+    }
+
 
     if (type == LOG_ENTRY_TYPE_OBJ) {
-        // Only send objects when they're currently in the hash table.
-        // Otherwise they're dead.
-        Key key(type, buffer);
-        if (!objectManager.keyPointsAtReference(key,
-                    it.getReference())) {
-            return STATUS_OK;
-        }
+        // Note: there used to be code here to ignore objects that aren't
+        // pointed to by the hash table, under the assumption that they are
+        // dead. However, this doesn't work in the presence of concurrent
+        // cleaning: the cleaner may have moved an object to a side segment
+        // that is not yet visible. Thus, we must send objects even if they
+        // ddon't appear to be alive. If an object really is dead, we will
+        // also send a tombstone, which will allow the object to be filtered at
+        // the destination.
 
     } else if (type == LOG_ENTRY_TYPE_OBJTOMB) {
         // We must always send tombstones, since an object we may have sent
@@ -919,6 +949,9 @@ MasterService::migrateSingleLogEntry(
             return STATUS_INTERNAL_ERROR;
         }
     }
+
+    TEST_LOG("Migrated log entry type %s",
+            LogEntryTypeHelpers::toString(type));
     return STATUS_OK;
 }
 
@@ -939,6 +972,10 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
     uint64_t firstKeyHash = reqHdr->firstKeyHash;
     uint64_t lastKeyHash = reqHdr->lastKeyHash;
     ServerId receiver(reqHdr->newOwnerMasterId);
+
+    // Mark this request as read-only, to avoid deadlock when performing
+    // epoch-related waits below.
+    rpc->worker->rpc->activities = Transport::ServerRpc::READ_ACTIVITY;
 
     // Find the tablet we're trying to move. We only support migration
     // when the tablet to be migrated consists of a range within a single,
@@ -980,18 +1017,24 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
     uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
     uint64_t totalBytes = 0;
 
-    LogIterator it(*objectManager.getLog(), false);
-    // Scan the log from oldest to newest entries until we reach the head
-    for (; !it.onHead(); it.next()) {
-        Status error = migrateSingleLogEntry(
-                *it.getCurrentSegmentIterator(),
-                transferSeg, entryTotals, totalBytes,
-                tableId, firstKeyHash, lastKeyHash,
-                receiver);
-        if (error) return;
+    LogIterator it(*objectManager.getLog());
+    // Phase 1: scan the log from oldest to newest entries until we reach
+    // the head segment.
+    if (!it.isDone()) {
+        while (true) {
+            Status error = migrateSingleLogEntry(
+                    *it.getCurrentSegmentIterator(),
+                    transferSeg, entryTotals, totalBytes,
+                    tableId, firstKeyHash, lastKeyHash,
+                    receiver);
+            if (error) return;
+            if (it.onHead())
+                break;
+            it.next();
+        }
     }
 
-    // Phase 2 block new writes and let current writes finish
+    // Phase 2: block new writes and let current writes finish
     if (it.onHead()) {
         tabletManager.changeState(tableId, firstKeyHash, lastKeyHash,
                 TabletManager::NORMAL, TabletManager::LOCKED_FOR_MIGRATION);
@@ -1000,30 +1043,27 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
         // currently running RPC could have been a part of
         uint64_t epoch = ServerRpcPool<>::incrementCurrentEpoch() - 1;
 
-        // Increase our epoch nuumber to the current epoch number so we do not
-        // wait on ourselves
-        rpc->worker->rpc->epoch = epoch + 1;
-
         // Wait for the remainder of already running writes to finish.
         while (true) {
             uint64_t earliestEpoch =
-                ServerRpcPool<>::getEarliestOutstandingEpoch(context);
+                ServerRpcPool<>::getEarliestOutstandingEpoch(context,
+                        Transport::ServerRpc::APPEND_ACTIVITY);
             if (earliestEpoch > epoch)
                 break;
         }
+    }
 
-        // Now we mark the position and finish the migration
-        LogPosition position = objectManager.getLog()->getHead();
-        it.refresh();
-
-        for (; it.getPosition() < position; it.next()) {
-            Status error = migrateSingleLogEntry(
-                    *it.getCurrentSegmentIterator(),
-                    transferSeg, entryTotals, totalBytes,
-                    tableId, firstKeyHash, lastKeyHash,
-                    receiver);
-            if (error) return;
-        }
+    // Phase 3: finish iterating over the remaining log entries.
+    while (true) {
+        it.next();
+        if (it.isDone())
+            break;
+        Status error = migrateSingleLogEntry(
+                *it.getCurrentSegmentIterator(),
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) return;
     }
 
     if (transferSeg) {
@@ -1050,7 +1090,13 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
             context->serverList->toString(receiver).c_str(),
             totalBytes);
 
-    tabletManager.deleteTablet(tableId, firstKeyHash, lastKeyHash);
+    bool removed = tabletManager.deleteTablet(tableId,
+                                              firstKeyHash,
+                                              lastKeyHash);
+    if (removed) {
+        TableStats::deleteKeyHashRange(&masterTableMetadata, tableId,
+                firstKeyHash, lastKeyHash);
+    }
 
     // Ensure that the ObjectManager never returns objects from this deleted
     // tablet again.
@@ -1502,6 +1548,8 @@ MasterService::prepForMigration(
         LOG(NOTICE, "Ready to receive tablet [0x%lx,0x%lx] in tableId %lu from "
                 "\"??\"", reqHdr->firstKeyHash, reqHdr->lastKeyHash,
                 reqHdr->tableId);
+        TableStats::addKeyHashRange(&masterTableMetadata, reqHdr->tableId,
+                reqHdr->firstKeyHash, reqHdr->lastKeyHash);
     } else {
         TabletManager::Tablet tablet;
         if (!tabletManager.getTablet(reqHdr->tableId,
@@ -1961,12 +2009,14 @@ MasterService::migrateSingleIndexObject(
     Buffer dataBufferToTransfer;
 
     if (type == LOG_ENTRY_TYPE_OBJ) {
-        // Only send objects when they're currently in the hash table.
-        // Otherwise they're dead.
-        if (!objectManager.keyPointsAtReference(
-                indexNodeKey, it.getReference())) {
-            return 0;
-        }
+        // Note: there used to be code here to ignore objects that aren't
+        // pointed to by the hash table, under the assumption that they are
+        // dead. However, this doesn't work in the presence of concurrent
+        // cleaning: the cleaner may have moved an object to a side segment
+        // that is not yet visible. Thus, we must send objects even if they
+        // ddon't appear to be alive. If an object really is dead, we will
+        // also send a tombstone, which will allow the object to be filtered at
+        // the destination.
 
         totalObjects++;
 
@@ -2051,6 +2101,10 @@ MasterService::splitAndMigrateIndexlet(
     void* splitKey = rpc->requestPayload->getRange(
             sizeof32(*reqHdr), splitKeyLength);
 
+    // Mark this request as read-only, to avoid deadlock when performing
+    // epoch-related waits below.
+    rpc->worker->rpc->activities = Transport::ServerRpc::READ_ACTIVITY;
+
     if (splitKey == NULL) {
         throw FatalError(HERE, "Ill-formed RPC in splitAndMigrateIndexlet.");
     }
@@ -2100,17 +2154,23 @@ MasterService::splitAndMigrateIndexlet(
     uint64_t totalTombstones = 0;
     uint64_t totalBytes = 0;
 
-    LogIterator it(*objectManager.getLog(), false);
+    LogIterator it(*objectManager.getLog());
 
-    // Scan the log from oldest to newest entries until we reach the head.
-    for (; !it.isDone(); it.next()) {
-        int error = migrateSingleIndexObject(
-                receiver, tableId, indexId,
-                currentBackingTableId, newBackingTableId,
-                splitKey, splitKeyLength,
-                it, transferSeg, totalObjects, totalTombstones, totalBytes,
-                respHdr);
-        if (error) return;
+    // Phase 1: scan the log from oldest to newest entries until we reach
+    // the head segment.
+    if (!it.isDone()) {
+        while (true) {
+            int error = migrateSingleIndexObject(
+                    receiver, tableId, indexId,
+                    currentBackingTableId, newBackingTableId,
+                    splitKey, splitKeyLength,
+                    it, transferSeg, totalObjects, totalTombstones, totalBytes,
+                    respHdr);
+            if (error) return;
+            if (it.onHead())
+                break;
+            it.next();
+        }
     }
 
     // Phase 2 block new writes and let current writes finish
@@ -2127,31 +2187,28 @@ MasterService::splitAndMigrateIndexlet(
         // currently running RPC could have been a part of
         uint64_t epoch = ServerRpcPool<>::incrementCurrentEpoch() - 1;
 
-        // Increase our epoch nuumber to the current epoch number so we do not
-        // wait on ourselves
-        rpc->worker->rpc->epoch = epoch + 1;
-
         // Wait for the remainder of already running writes to finish.
         while (true) {
             uint64_t earliestEpoch =
-                ServerRpcPool<>::getEarliestOutstandingEpoch(context);
+                ServerRpcPool<>::getEarliestOutstandingEpoch(context,
+                        Transport::ServerRpc::APPEND_ACTIVITY);
             if (earliestEpoch > epoch)
                 break;
         }
+    }
 
-        // Now we mark the position and finish the migration
-        LogPosition position = objectManager.getLog()->getHead();
-        it.refresh();
-
-        for (; it.getPosition() < position; it.next()) {
-            int error = migrateSingleIndexObject(
-                    receiver, tableId, indexId,
-                    currentBackingTableId, newBackingTableId,
-                    splitKey, splitKeyLength,
-                    it, transferSeg, totalObjects, totalTombstones, totalBytes,
-                    respHdr);
-            if (error) return;
-        }
+    // Phase 3: finish iterating over the remaining log entries.
+    while (true) {
+        it.next();
+        if (it.isDone())
+            break;
+        int error = migrateSingleIndexObject(
+                receiver, tableId, indexId,
+                currentBackingTableId, newBackingTableId,
+                splitKey, splitKeyLength,
+                it, transferSeg, totalObjects, totalTombstones, totalBytes,
+                respHdr);
+        if (error) return;
     }
 
     if (transferSeg) {
@@ -2238,6 +2295,8 @@ MasterService::takeTabletOwnership(
     if (added) {
         LOG(NOTICE, "Took ownership of new tablet [0x%lx,0x%lx] in tableId %lu",
                 reqHdr->firstKeyHash, reqHdr->lastKeyHash, reqHdr->tableId);
+        TableStats::addKeyHashRange(&masterTableMetadata, reqHdr->tableId,
+                reqHdr->firstKeyHash, reqHdr->lastKeyHash);
     } else {
         TabletManager::Tablet tablet;
         if (tabletManager.getTablet(reqHdr->tableId,
@@ -2479,6 +2538,16 @@ MasterService::txRequestAbort(
         uint64_t rpcId = participants[i].rpcId;
         uint64_t keyHash = participants[i].keyHash;
 
+        // If the tablet doesn't exist in the NORMAL state,
+        // we must plead ignorance.
+        TabletManager::Tablet tablet;
+        if (!tabletManager.getTablet(tableId, keyHash, &tablet) ||
+            tablet.state != TabletManager::NORMAL) {
+            respHdr->common.status = STATUS_UNKNOWN_TABLET;
+            rpc->sendReply();
+            return;
+        }
+
         rpcHandles.emplace_back(&unackedRpcResults,
                                 reqHdr->leaseId,
                                 rpcId,
@@ -2578,10 +2647,27 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
 
     reqOffset += sizeof32(WireFormat::TxParticipant) * participantCount;
 
-    if (participants == NULL) {
+    if (participantCount == 0 || participants == NULL) {
         respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;
         rpc->sendReply();
         return;
+    }
+
+    ParticipantList participantList(participants,
+                                    participantCount,
+                                    reqHdr->lease.leaseId);
+    TransactionId txId = participantList.getTransactionId();
+    if (!preparedOps.hasParticipantListEntry(txId)) {
+        uint64_t logRef = 0;
+        Status status = objectManager.logTransactionParticipantList(
+                                                    participantList, &logRef);
+        if (status == STATUS_OK) {
+            preparedOps.updateParticipantListEntry(txId, logRef);
+        } else {
+            respHdr->common.status = status;
+            rpc->sendReply();
+            return;
+        }
     }
 
     // 2. Process operations.
@@ -2630,8 +2716,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
             buffer.appendExternal(rpc->requestPayload, reqOffset,
                                   currentReq->keyLength);
 
-            op.construct(*type, reqHdr->lease.leaseId, rpcId,
-                         participantCount, participants,
+            op.construct(*type, txId.clientLeaseId, txId.txRpcId, rpcId,
                          tableId, 0, 0,
                          buffer);
 
@@ -2660,8 +2745,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
             buffer.appendExternal(rpc->requestPayload, reqOffset,
                                   currentReq->keyLength);
 
-            op.construct(*type, reqHdr->lease.leaseId, rpcId,
-                         participantCount, participants,
+            op.construct(*type, txId.clientLeaseId, txId.txRpcId, rpcId,
                          tableId, 0, 0,
                          buffer);
 
@@ -2682,8 +2766,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
             tableId = currentReq->tableId;
             rpcId = currentReq->rpcId;
             rejectRules = currentReq->rejectRules;
-            op.construct(*type, reqHdr->lease.leaseId, rpcId,
-                         participantCount, participants,
+            op.construct(*type, txId.clientLeaseId, txId.txRpcId, rpcId,
                          tableId, 0, 0,
                          *(rpc->requestPayload), reqOffset,
                          currentReq->length);
@@ -2712,8 +2795,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
             buffer.appendExternal(rpc->requestPayload, reqOffset,
                                   currentReq->keyLength);
 
-            op.construct(*type, reqHdr->lease.leaseId, rpcId,
-                         participantCount, participants,
+            op.construct(*type, txId.clientLeaseId, txId.txRpcId, rpcId,
                          tableId, 0, 0,
                          buffer);
 
@@ -3450,6 +3532,10 @@ MasterService::recover(const WireFormat::Recover::Request* reqHdr,
                     newTablet.table_id(),
                     newTablet.start_key_hash(), newTablet.end_key_hash(),
                     tabletManager.toString().c_str()));
+        } else {
+            TableStats::addKeyHashRange(&masterTableMetadata,
+                    newTablet.table_id(), newTablet.start_key_hash(),
+                    newTablet.end_key_hash());
         }
     }
 
@@ -3585,8 +3671,14 @@ MasterService::recover(const WireFormat::Recover::Request* reqHdr,
         // recovery before starting to serve requests again.
         foreach (const ProtoBuf::Tablets::Tablet& tablet,
                 recoveryPartition.tablet()) {
-            tabletManager.deleteTablet(tablet.table_id(),
+            bool removed = tabletManager.deleteTablet(tablet.table_id(),
                     tablet.start_key_hash(), tablet.end_key_hash());
+            if (removed) {
+                TableStats::deleteKeyHashRange(&masterTableMetadata,
+                        tablet.table_id(), tablet.start_key_hash(),
+                        tablet.end_key_hash());
+            }
+
         }
         foreach (const ProtoBuf::Indexlet& indexlet,
                 recoveryPartition.indexlet()) {

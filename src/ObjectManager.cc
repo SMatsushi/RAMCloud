@@ -333,9 +333,7 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
 
     Object object(buffer);
     if (valueOnly) {
-        uint32_t valueOffset = 0;
-        object.getValueOffset(&valueOffset);
-        object.appendValueToBuffer(outBuffer, valueOffset);
+        object.appendValueToBuffer(outBuffer);
     } else {
         object.appendKeysAndValueToBuffer(*outBuffer);
     }
@@ -508,7 +506,7 @@ class DelayedIncrementer {
 void
 ObjectManager::replaySegment(SideLog* sideLog, SegmentIterator& it)
 {
-  replaySegment(sideLog, it, NULL);
+    replaySegment(sideLog, it, NULL);
 }
 
 /**
@@ -1033,8 +1031,43 @@ ObjectManager::replaySegment(SideLog* sideLog, SegmentIterator& it,
                                       buffer.size(),
                                       1);
             }
-        }
+        } else if (type == LOG_ENTRY_TYPE_TXPLIST) {
+            Buffer buffer;
+            it.appendToBuffer(buffer);
 
+            ParticipantList participantList(buffer);
+
+            bool checksumIsValid = ({
+                CycleCounter<uint64_t> c(&verifyChecksumTicks);
+                participantList.checkIntegrity();
+            });
+
+            TransactionId txId = participantList.getTransactionId();
+
+            if (expect_false(!checksumIsValid)) {
+                LOG(ERROR,
+                        "bad ParticipantList checksum! "
+                        "(leaseId: %lu, txId: %lu)",
+                        txId.clientLeaseId, txId.txRpcId);
+                // TODO(cstlee): Should throw and try another segment replica?
+            }
+            if (unackedRpcResults->shouldRecover(txId.clientLeaseId,
+                                                 txId.txRpcId,
+                                                 0)
+                    && !preparedOps->hasParticipantListEntry(txId)) {
+                CycleCounter<uint64_t> _(&segmentAppendTicks);
+                Log::Reference logRef;
+                if (sideLog->append(LOG_ENTRY_TYPE_TXPLIST, buffer, &logRef)) {
+                    preparedOps->updateParticipantListEntry(
+                            txId, logRef.toInteger());
+                } else {
+                    LOG(ERROR,
+                            "Could not append ParticipantList! "
+                            "(leaseId: %lu, txId: %lu)",
+                            txId.clientLeaseId, txId.txRpcId);
+                }
+            }
+        }
     }
 
     metrics->master.backupInRecoverTicks +=
@@ -1297,8 +1330,9 @@ void
 ObjectManager::writePrepareFail(RpcResult* rpcResult, uint64_t* rpcResultPtr)
 {
     Log::AppendVector av;
-    *((WireFormat::TxPrepare::Vote*)rpcResult->getResp()) =
-        WireFormat::TxPrepare::ABORT;
+    *(reinterpret_cast<WireFormat::TxPrepare::Vote*>(
+            const_cast<void*>(rpcResult->getResp()))) =
+                    WireFormat::TxPrepare::ABORT;
     rpcResult->assembleForLog(av.buffer);
     av.type = LOG_ENTRY_TYPE_RPCRESULT;
 
@@ -1315,6 +1349,43 @@ ObjectManager::writePrepareFail(RpcResult* rpcResult, uint64_t* rpcResultPtr)
             rpcResult->getTableId(),
             av.buffer.size(),
             1);
+}
+
+/**
+ * Append the provided ParticipantList to the log.
+ *
+ * \param participantList
+ *      ParticipantList to be appended.
+ * \param participantListLogRef
+ *      Log reference to the appended ParticipantList.
+ * \return
+ *      STATUS_OK if the ParticipantList could be appended.
+ *      STATUS_RETRY otherwise.
+ */
+Status
+ObjectManager::logTransactionParticipantList(ParticipantList& participantList,
+                                             uint64_t* participantListLogRef)
+{
+    Buffer participantListBuffer;
+    Log::Reference reference;
+    participantList.assembleForLog(participantListBuffer);
+
+    // Write the ParticipantList into the Log, update the table.
+    if (!log.append(LOG_ENTRY_TYPE_TXPLIST, participantListBuffer, &reference))
+    {
+        // The log is out of space. Tell the client to retry and hope
+        // that the cleaner makes space soon.
+        return STATUS_RETRY;
+    }
+
+    *participantListLogRef = reference.toInteger();
+
+    // Participant List records are not accounted for in the table stats.  The
+    // assumption is that the Participant List records should occupy a
+    // relatively small fraction of the server's log and thus should not
+    // significantly affect table stats estimate.
+
+    return STATUS_OK;
 }
 
 /**
@@ -2316,6 +2387,8 @@ ObjectManager::relocate(LogEntryType type, Buffer& oldBuffer,
         relocatePreparedOpTombstone(oldBuffer, relocator);
     else if (type == LOG_ENTRY_TYPE_TXDECISION)
         relocateTxDecisionRecord(oldBuffer, relocator);
+    else if (type == LOG_ENTRY_TYPE_TXPLIST)
+        relocateTxParticipantList(oldBuffer, relocator);
 }
 
 /**
@@ -2464,6 +2537,16 @@ ObjectManager::dumpSegment(Segment* segment)
                     decisionRecord.getTableId(), decisionRecord.getKeyHash(),
                     decisionRecord.getLeaseId());
 
+        } else if (type == LOG_ENTRY_TYPE_TXPLIST) {
+            Buffer buffer;
+            it.appendToBuffer(buffer);
+            ParticipantList participantList(buffer);
+            result += format("%sparticipantList at offset %u, length %u with "
+                    "TxId: (leaseId %lu, rpcId %lu) containing %u entries",
+                    separator, it.getOffset(), it.getLength(),
+                    participantList.getTransactionId().clientLeaseId,
+                    participantList.getTransactionId().txRpcId,
+                    participantList.header.participantCount);
         }
 
         it.next();
@@ -3107,6 +3190,58 @@ ObjectManager::relocateTxDecisionRecord(
                               record.getTableId(),
                               oldBuffer.size(),
                               1);
+    }
+}
+
+/**
+ * Method used by the LogCleaner when it's cleaning a Segment and comes across
+ * a ParticipantList record.
+ *
+ * This method will decide if the ParticipantList is still alive. If it is, it
+ * must move the record to a new location and update the PreparedOps module.
+ *
+ * \param oldBuffer
+ *      Buffer pointing to the ParticipantList's current location, which will
+ *      soon be invalidated.
+ * \param relocator
+ *      The relocator may be used to store the ParticipantList in a new location
+ *      if it is still alive. It also provides a reference to the new location
+ *      and keeps track of whether this call wanted the ParticipantList anymore
+ *      or not.
+ *
+ *      It is possible that relocation may fail (because more memory needs to
+ *      be allocated). In this case, the callback should just return. The
+ *      cleaner will note the failure, allocate more memory, and try again.
+ */
+void
+ObjectManager::relocateTxParticipantList(Buffer& oldBuffer,
+        LogEntryRelocator& relocator)
+{
+    ParticipantList participantList(oldBuffer);
+
+    // See if this transaction is still going on and thus if the participant
+    // list should be kept.
+    TransactionId txId = participantList.getTransactionId();
+
+    bool keep = !unackedRpcResults->isRpcAcked(txId.clientLeaseId,
+                                               txId.txRpcId);
+
+    if (keep) {
+        // Try to relocate it. If it fails, just return. The cleaner will
+        // allocate more memory and retry.
+        if (!relocator.append(LOG_ENTRY_TYPE_TXPLIST, oldBuffer))
+            return;
+
+        preparedOps->updateParticipantListEntry(
+                txId, relocator.getNewReference().toInteger());
+    } else {
+        // Participant List will be dropped/"cleaned"
+        preparedOps->updateParticipantListEntry(txId, 0);
+
+        // Participant List records are not accounted for in the table stats.
+        // The assumption is that the Participant List records should occupy a
+        // relatively small fraction of the server's log and thus should not
+        // significantly affect table stats estimate.
     }
 }
 

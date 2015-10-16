@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014 Stanford University
+/* Copyright (c) 2012-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -15,8 +15,8 @@
 
 #include "BindTransport.h"
 #include "Server.h"
-#include "ServiceManager.h"
 #include "ShortMacros.h"
+#include "WorkerManager.h"
 
 namespace RAMCloud {
 /**
@@ -46,6 +46,7 @@ Server::Server(Context* context, const ServerConfig* config)
 {
     context->coordinatorSession->setLocation(
             config->coordinatorLocator.c_str(), config->clusterName.c_str());
+    context->workerManager = new WorkerManager(context, config->maxCores-1);
 }
 
 /**
@@ -54,10 +55,6 @@ Server::Server(Context* context, const ServerConfig* config)
 Server::~Server()
 {
     delete serverList;
-    if (backup && (backup.get() == context->backupService))
-        context->backupService = NULL;
-    if (master && (master.get() == context->masterService))
-        context->masterService = NULL;
 }
 
 /**
@@ -73,7 +70,8 @@ Server::~Server()
 void
 Server::startForTesting(BindTransport& bindTransport)
 {
-    ServerId formerServerId = createAndRegisterServices(&bindTransport);
+    ServerId formerServerId = createAndRegisterServices();
+    bindTransport.registerServer(context, config.localLocator);
     enlist(formerServerId);
 }
 
@@ -86,7 +84,7 @@ void
 Server::run()
 {
     LOG(NOTICE, "Starting services");
-    ServerId formerServerId = createAndRegisterServices(NULL);
+    ServerId formerServerId = createAndRegisterServices();
     LOG(NOTICE, "Services started");
 
     // Only pin down memory _after_ users of LargeBlockOfMemory have
@@ -118,12 +116,7 @@ Server::run()
 
 /**
  * Create each of the services which are marked as active in config.services,
- * configure them according to #config, and register them with the
- * ServiceManager (or, if bindTransport is supplied, with the transport).
- *
- * \param bindTransport
- *      If given, register the services with \a bindTransport instead of the
- *      Context's ServiceManager.
+ * configure them according to #config, and register them.
  *
  * \return
  *      If this server is rejoining a cluster its former server id is returned,
@@ -134,7 +127,7 @@ Server::run()
  *      created to ensure correct garbage collection of the stored replicas.
  */
 ServerId
-Server::createAndRegisterServices(BindTransport* bindTransport)
+Server::createAndRegisterServices()
 {
     ServerId formerServerId;
 
@@ -152,57 +145,24 @@ Server::createAndRegisterServices(BindTransport* bindTransport)
     if (config.services.has(WireFormat::MASTER_SERVICE)) {
         LOG(NOTICE, "Master is using %u backups", config.master.numReplicas);
         master.construct(context, &config);
-        context->masterService = master.get();
-        if (bindTransport) {
-            bindTransport->addService(*master,
-                                      config.localLocator,
-                                      WireFormat::MASTER_SERVICE);
-        } else {
-            context->serviceManager->addService(*master,
-                                                WireFormat::MASTER_SERVICE);
-        }
     }
 
     if (config.services.has(WireFormat::BACKUP_SERVICE)) {
         LOG(NOTICE, "Starting backup service");
         backup.construct(context, &config);
-        context->backupService = backup.get();
         formerServerId = backup->getFormerServerId();
         backupReadSpeed = backup->getReadSpeed();
-        if (bindTransport) {
-            bindTransport->addService(*backup,
-                                      config.localLocator,
-                                      WireFormat::BACKUP_SERVICE);
-        } else {
-            context->serviceManager->addService(*backup,
-                                                WireFormat::BACKUP_SERVICE);
-        }
         LOG(NOTICE, "Backup service started");
     }
 
     if (config.services.has(WireFormat::MEMBERSHIP_SERVICE)) {
-        membership.construct(static_cast<ServerList*>(context->serverList),
+        membership.construct(context,
+                             static_cast<ServerList*>(context->serverList),
                              &config);
-        if (bindTransport) {
-            bindTransport->addService(*membership,
-                                      config.localLocator,
-                                      WireFormat::MEMBERSHIP_SERVICE);
-        } else {
-            context->serviceManager->addService(*membership,
-                                                WireFormat::MEMBERSHIP_SERVICE);
-        }
     }
 
     if (config.services.has(WireFormat::PING_SERVICE)) {
         ping.construct(context);
-        if (bindTransport) {
-            bindTransport->addService(*ping,
-                                      config.localLocator,
-                                      WireFormat::PING_SERVICE);
-        } else {
-            context->serviceManager->addService(*ping,
-                                                WireFormat::PING_SERVICE);
-        }
     }
 
     return formerServerId;

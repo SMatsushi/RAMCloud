@@ -2353,17 +2353,14 @@ indexLookupCommon(bool doIndexRange, uint32_t samplesPerOp)
     uint64_t firstPkHash = 0;
     char firstSecondaryKey[keyLength];
 
-    int bytesWritten;
     for (uint32_t i = 0, k = 0; i < maxNumObjects; i++) {
         char primaryKey[keyLength];
-        bytesWritten = snprintf(primaryKey, sizeof(primaryKey), "p%0*d",
+        snprintf(primaryKey, sizeof(primaryKey), "p%0*d",
                 keyLength-2, i);
-        assert(bytesWritten == keyLength-1);
 
         char secondaryKey[keyLength];
-        bytesWritten = snprintf(secondaryKey, sizeof(secondaryKey), "b%ds%0*d",
+        snprintf(secondaryKey, sizeof(secondaryKey), "b%ds%0*d",
                 i, keyLength, 0);
-        assert(bytesWritten == keyLength-1);
 
         if (doIndexRange && i == 0) {
             memcpy(firstSecondaryKey, secondaryKey, keyLength);
@@ -3385,6 +3382,7 @@ indexScalabilityCommonLookup(uint8_t numIndexlets, int numObjectsPerIndxlet,
         lookupEnd = Cycles::rdtsc();
 
         // Verify data.
+        #if DEBUG_BUILD
         for (int i =0; i < numRequests; i++) {
             Key pk(lookupTable, primaryKey[i], 30);
             uint32_t lookupOffset;
@@ -3394,6 +3392,7 @@ indexScalabilityCommonLookup(uint8_t numIndexlets, int numObjectsPerIndxlet,
             assert(pk.getHash()==
                     *lookupResp[i].getOffset<uint64_t>(lookupOffset));
         }
+        #endif
 
         uint64_t latency = lookupEnd - lookupStart;
         opCount = opCount + numRequests;
@@ -5761,11 +5760,11 @@ writeThroughputMaster(int numObjects, int size, uint16_t keyLength)
     // throughput while gradually increasing the number of workers.
     printf("#\n");
     printf("# clients   throughput   worker   cleaner  compactor  "
-            "cleaner  dispatch  netOut    netIn\n");
+            "cleaner  dispatch  netOut    netIn   replic    sync\n");
     printf("#           (kops/sec)   cores     cores    free %%    "
-            "free %%   utiliz.   (MB/s)    (MB/s)\n");
+            "free %%   utiliz.   (MB/s)    (MB/s)   eff.     frac\n");
     printf("#------------------------------------------------------"
-            "--------------------------------------------\n");
+            "------------------------------------------------------\n");
     fillTable(dataTable, numObjects, keyLength, size);
     Cycles::sleep(2000000);
     string stats[5];
@@ -5833,11 +5832,16 @@ writeThroughputMaster(int numObjects, int size, uint16_t keyLength)
         double netInRate = static_cast<double>(
                 finishStats.networkInputBytes -
                 startStats.networkInputBytes) / elapsedTime;
+        double repEfficiency = static_cast<double>(finishStats.writeCount -
+                startStats.writeCount)/static_cast<double>(
+                finishStats.replicationRpcs - startStats.replicationRpcs);
+        double syncFraction = static_cast<double>(finishStats.logSyncCycles -
+                startStats.logSyncCycles) / elapsedCycles;
         printf("%5d       %8.2f   %8.3f %8.3f %8.1f  %8.1f  %8.3f "
-                "%8.2f  %8.2f\n",
+                "%8.2f  %8.2f %7.2f  %7.2f\n",
                 numSlaves, rate/1e03, utilization, cleanerUtilization,
                 compactorFreePct, cleanerFreePct, dispatchUtilization,
-                netOutRate/1e06, netInRate/1e06);
+                netOutRate/1e06, netInRate/1e06, repEfficiency, syncFraction);
     }
     sendCommand("done", "done", 1, numClients-1);
 #if 0

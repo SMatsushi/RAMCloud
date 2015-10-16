@@ -40,7 +40,7 @@ endif
 # ExternalStorage implementation.
 ZOOKEEPER ?= yes
 ifeq ($(ZOOKEEPER),yes)
-ZOOKEEPER_LIB ?= /usr/local/lib/libzookeeper_mt.a
+ZOOKEEPER_LIB ?= -lzookeeper_mt
 ZOOKEEPER_DIR ?= /usr/local/zookeeper-3.4.5
 else
 ZOOKEEPER_LIB :=
@@ -54,7 +54,7 @@ DEBUGFLAGS := -DTESTING=1 -fno-builtin
 else
 BASECFLAGS := -g
 OPTFLAG := -O3
-DEBUGFLAGS := -DNDEBUG -Wno-unused-variable
+DEBUGFLAGS := -DNDEBUG -Wno-unused-variable -Wno-maybe-uninitialized
 endif
 
 COMFLAGS := $(BASECFLAGS) $(OPTFLAG) -fno-strict-aliasing \
@@ -281,7 +281,7 @@ docs:
 docs-clean: python-docs-clean
 	rm -rf docs/doxygen/
 
-tags: 
+tags:
 	find . -type f | grep -v "\.git" | grep -v docs | xargs etags
 	find . -type f | grep -v "\.git" | grep -v docs | xargs ctags
 
@@ -295,7 +295,7 @@ print-%:
 
 # Rebuild the Java bindings
 java: $(OBJDIR)/libramcloud.a
-	cd bindings/java; ./gradlew build
+	cd bindings/java; ./gradlew
 java-clean:
 	cd bindings/java; ./gradlew clean
 
@@ -368,22 +368,15 @@ INSTALL_INCLUDES := \
 
 INSTALLED_BINS := $(patsubst $(OBJDIR)/%, $(INSTALL_DIR)/bin/%, $(INSTALL_BINS))
 INSTALLED_LIBS := $(patsubst $(OBJDIR)/%, $(INSTALL_DIR)/lib/%, $(INSTALL_LIBS))
-	
-install: all
+
+install: all java
 	mkdir -p $(INSTALL_DIR)/bin
 	cp $(INSTALL_BINS) $(INSTALL_DIR)/bin
 	mkdir -p $(INSTALL_DIR)/include/ramcloud
 	cp $(INSTALL_INCLUDES) $(INSTALL_DIR)/include/ramcloud
 	mkdir -p $(INSTALL_DIR)/lib/ramcloud
 	cp $(INSTALL_LIBS) $(INSTALL_DIR)/lib/ramcloud
-
-java-install: java
-	mkdir -p $(INSTALL_DIR)/bin
-	rm -rf $(INSTALL_DIR)/bin/java
-	cp -r bindings/java/bin $(INSTALL_DIR)/bin/java
-	rm -rf $(INSTALL_DIR)/lib/ramcloud/java
-	mkdir -p $(INSTALL_DIR)/lib/ramcloud/java
-	cp -r bindings/java/lib $(INSTALL_DIR)/lib/ramcloud/java
+	cp bindings/java/build/install/ramcloud/lib/* $(INSTALL_DIR)/lib/ramcloud
 
 install-clean:
 	rm -rf install

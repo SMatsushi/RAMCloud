@@ -32,7 +32,8 @@ namespace RAMCloud {
  * Create a BackupService.
  *
  * \param context
- *      Overall information about the RAMCloud server.
+ *      Overall information about the RAMCloud server. The new service
+ *      will be registered in this context.
  * \param config
  *      Settings for this instance. The caller guarantees that config will
  *      exist for the duration of this BackupService's lifetime.
@@ -57,6 +58,7 @@ BackupService::BackupService(Context* context,
     , taskQueue()
     , oldReplicas(0)
 {
+    context->services[WireFormat::BACKUP_SERVICE] = this;
     if (config->backup.inMemory) {
         storage.reset(new InMemoryStorage(config->segmentSize,
                                           config->backup.numSegmentFrames,
@@ -114,6 +116,7 @@ BackupService::BackupService(Context* context,
 
 BackupService::~BackupService()
 {
+    context->services[WireFormat::BACKUP_SERVICE] = NULL;
     // Stop the garbage collector.
     taskQueue.halt();
     if (gcThread)
