@@ -1,0 +1,48 @@
+# -*- makefile-gmake -*-
+# included from the top of ../GNUmakefile
+
+# disable dpdk if the target is 'test'.
+# request from matsushita san.
+ifeq ($(MAKECMDGOALS),test)
+DPDK := no
+endif
+
+DPDK  ?= yes
+DEBUG ?= yes
+
+COMPILER := gnu
+GCC44 := /usr/bin/gcc44
+GXX44 := /usr/bin/g++44
+GCC   := /usr/bin/gcc
+GXX   := /usr/bin/g++
+
+CC   := $(GCC44)
+CXX  := $(GXX44)
+SSE  := sse4.2
+ARCH := corei7
+
+GCC_MAJOR_VERSION = $(shell $(CC) -dumpversion | cut -f1 -d.)
+GCC_MINOR_VERSION = $(shell $(CC) -dumpversion | cut -f2 -d.)
+
+ifeq ($(shell test $(GCC_MINOR_VERSION) -ge 6 && echo 1), 1)
+# corei7 support added since gcc-4.6.x
+ARCH ?= corei7
+else
+# gcc-4.4: nocona or core2
+ifneq ($(ARCH),nocona)
+ARCH := core2
+endif
+endif
+
+
+# link with the zookeeper static library instead of shared library,
+# so as to run on cluster hosts without deploying zookeeper.
+ZOOKEEPER_LIB := /usr/local/lib/libzookeeper_mt.a
+
+ifeq ($(DPDK),yes)
+ifeq ($(shell grep -q sse3 /proc/cpuinfo && echo 1),)
+ifeq ($(MAKECMDGOALS),test)
+$(error Unable to run make test on this cpu. no sse3 support found)
+endif
+endif
+endif

@@ -16,7 +16,6 @@
 /obj/
 /obj.*/
 /src/config.h
-/private/
 /scripts/localconfig.py
 TAGS
 tags
