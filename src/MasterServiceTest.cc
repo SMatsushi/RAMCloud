@@ -13,6 +13,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <algorithm>
+
 #include "TestUtil.h"
 
 #include "BackupStorage.h"
@@ -339,6 +341,21 @@ class MasterServiceTest : public ::testing::Test {
     DISALLOW_COPY_AND_ASSIGN(MasterServiceTest);
 };
 
+/**
+ * Used to std::sort tablets by first their tableId then their start hash.
+ *
+ * \param a - tablet 1
+ * \param b - tablet 2
+ * \return  - true if a < b
+ */
+bool tabletCompare(const TabletManager::Tablet &a,
+                          const TabletManager::Tablet &b) {
+    if (a.tableId != b.tableId)
+        return a.tableId < b.tableId;
+    else
+        return a.startKeyHash < b.startKeyHash;
+}
+
 TEST_F(MasterServiceTest, dispatch_initializationNotFinished) {
     Buffer request, response;
     Service::Rpc rpc(NULL, &request, &response);
@@ -434,7 +451,6 @@ TEST_F(MasterServiceTest, dropIndexletOwnership) {
     EXPECT_EQ("dropIndexletOwnership: Dropped ownership of (or did not own) "
             "indexlet in tableId 2, indexId 1", TestLog::get());
 }
-
 
 TEST_F(MasterServiceTest, takeIndexletOwnership) {
 
@@ -615,13 +631,29 @@ TEST_F(MasterServiceTest, getServerStatistics) {
     MasterClient::splitMasterTablet(&context, masterServer->serverId, 1,
             (~0UL/2));
     ramcloud->getServerStatistics("mock:host=master", serverStats);
-    EXPECT_TRUE(StringUtil::startsWith(serverStats.ShortDebugString(),
-            "tabletentry { table_id: 1 "
-            "start_key_hash: 0 "
-            "end_key_hash: 9223372036854775806 } "
-            "tabletentry { table_id: 1 start_key_hash: 9223372036854775807 "
-            "end_key_hash: 18446744073709551615 } "
-            "spin_lock_stats { locks { name:"));
+    ASSERT_EQ(2, serverStats.tabletentry_size());
+
+    auto& entry0 = serverStats.tabletentry(0);
+    auto& entry1 = serverStats.tabletentry(1);
+
+    // The tablets are unordered so we need an order agnostic test
+    if (entry0.start_key_hash() < entry1.start_key_hash()) {
+        EXPECT_EQ(1U, entry0.table_id());
+        EXPECT_EQ(0U, entry0.start_key_hash());
+        EXPECT_EQ(9223372036854775806UL, entry0.end_key_hash());
+
+        EXPECT_EQ(1U, entry1.table_id());
+        EXPECT_EQ(9223372036854775807UL, entry1.start_key_hash());
+        EXPECT_EQ(18446744073709551615UL, entry1.end_key_hash());
+    } else {
+        EXPECT_EQ(1U, entry1.table_id());
+        EXPECT_EQ(0U, entry1.start_key_hash());
+        EXPECT_EQ(9223372036854775806UL, entry1.end_key_hash());
+
+        EXPECT_EQ(1U, entry0.table_id());
+        EXPECT_EQ(9223372036854775807UL, entry0.start_key_hash());
+        EXPECT_EQ(18446744073709551615UL, entry0.end_key_hash());
+    }
 }
 
 TEST_F(MasterServiceTest, increment_basic) {
@@ -856,6 +888,161 @@ TEST_F(MasterServiceTest, migrateSingleLogEntry_wrongKeyHash) {
             TestLog::get());
     EXPECT_EQ(0U, totalBytes);
     EXPECT_EQ(0U, entryTotals[LOG_ENTRY_TYPE_OBJ]);
+}
+
+TEST_F(MasterServiceTest, migrateSingleLogEntry_rpcResult) {
+    // Populate segment
+    Segment segment;
+
+    { // Migrate
+        uint64_t response = 1;
+        Buffer dataBuffer;
+        dataBuffer.append(&response, sizeof(response));
+        RpcResult rpcResult(1, 0, 6, 4, 2, dataBuffer);
+        Buffer buffer;
+        rpcResult.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_RPCRESULT, buffer));
+    }{ // Bad key hash
+        Buffer dataBuffer;
+        RpcResult rpcResult(1, 1, 5, 3, 1, dataBuffer);
+        Buffer buffer;
+        rpcResult.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_RPCRESULT, buffer));
+    }{ // Bad table
+        service->tabletManager.addTablet(10, 0, ~0UL, TabletManager::NORMAL);
+        Buffer dataBuffer;
+        RpcResult rpcResult(10, 0, 10, 5, 2, dataBuffer);
+        Buffer buffer;
+        rpcResult.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_RPCRESULT, buffer));
+    }
+
+    Tub<Segment> transferSeg;
+
+    uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
+    uint64_t totalBytes = 0;
+    uint64_t tableId = 1;
+    uint64_t firstKeyHash = 0x0;
+    uint64_t lastKeyHash = 0x0;
+    ServerId receiver(1);
+
+    TestLog::reset();
+    Status error;
+
+    for (SegmentIterator it(segment); !it.isDone(); it.next()) {
+        error = service->migrateSingleLogEntry(
+                it,
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) break;
+    }
+
+    EXPECT_EQ(STATUS_OK, error);
+    EXPECT_EQ("migrateSingleLogEntry: Migrated log entry type "
+                    "Linearizable Rpc Record | "
+              "migrateSingleLogEntry: Linearizable Rpc Record not "
+                    "migrated; keyHash not in range | "
+              "migrateSingleLogEntry: Linearizable Rpc Record not "
+                    "migrated; tableId doesn't match",
+            TestLog::get());
+    EXPECT_EQ(52U, totalBytes);
+    EXPECT_EQ(1U, entryTotals[LOG_ENTRY_TYPE_RPCRESULT]);
+}
+
+TEST_F(MasterServiceTest, migrateSingleLogEntry_prepAndprepTomb) {
+    // Populate segment
+    Segment segment;
+
+    Key keyToMigrate(1, "1", 1);
+    Key keyBadHash(1, "2", 1);
+    assert(keyToMigrate.getHash() != keyBadHash.getHash());
+    Key keyBadTable(10, "1", 1);
+
+    { // Migrate
+        Buffer dataBuffer;
+        PreparedOp op(WireFormat::TxPrepare::WRITE,
+                      1UL, 10UL, 10UL,
+                      keyToMigrate, "hello", 6, 0, 0, dataBuffer);
+
+        Buffer buffer;
+        op.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_PREP, buffer));
+
+        PreparedOpTombstone opTomb(op, 0);
+        buffer.reset();
+        opTomb.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_PREPTOMB, buffer));
+    }{ // Bad key hash
+        Buffer dataBuffer;
+        PreparedOp op(WireFormat::TxPrepare::READ,
+                      1UL, 10UL, 10UL,
+                      keyBadHash, "hello", 6, 0, 0, dataBuffer);
+
+        Buffer buffer;
+        op.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_PREP, buffer));
+
+        PreparedOpTombstone opTomb(op, 0);
+        buffer.reset();
+        opTomb.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_PREPTOMB, buffer));
+    }{ // Bad table
+        service->tabletManager.addTablet(keyBadTable.getTableId(), 0, ~0UL,
+                                         TabletManager::NORMAL);
+        Buffer dataBuffer;
+        PreparedOp op(WireFormat::TxPrepare::WRITE,
+                      1UL, 10UL, 10UL,
+                      keyBadTable, "hello", 6, 0, 0, dataBuffer);
+
+        Buffer buffer;
+        op.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_PREP, buffer));
+
+        PreparedOpTombstone opTomb(op, 0);
+        buffer.reset();
+        opTomb.assembleForLog(buffer);
+        ASSERT_TRUE(segment.append(LOG_ENTRY_TYPE_PREPTOMB, buffer));
+    }
+
+    Tub<Segment> transferSeg;
+
+    uint64_t entryTotals[TOTAL_LOG_ENTRY_TYPES] = {0};
+    uint64_t totalBytes = 0;
+    uint64_t tableId = keyToMigrate.getTableId();
+    uint64_t firstKeyHash = keyToMigrate.getHash();
+    uint64_t lastKeyHash = keyToMigrate.getHash();
+    ServerId receiver(1);
+
+    TestLog::reset();
+    Status error;
+
+    for (SegmentIterator it(segment); !it.isDone(); it.next()) {
+        error = service->migrateSingleLogEntry(
+                it,
+                transferSeg, entryTotals, totalBytes,
+                tableId, firstKeyHash, lastKeyHash,
+                receiver);
+        if (error) break;
+    }
+
+    EXPECT_EQ(STATUS_OK, error);
+    EXPECT_EQ("migrateSingleLogEntry: Migrated log entry type "
+                    "Transaction Prepare Record | "
+              "migrateSingleLogEntry: Migrated log entry type "
+                    "Transaction Prepare Tombstone | "
+              "migrateSingleLogEntry: Transaction Prepare Record not "
+                    "migrated; keyHash not in range | "
+              "migrateSingleLogEntry: Transaction Prepare Tombstone not "
+                    "migrated; keyHash not in range | "
+              "migrateSingleLogEntry: Transaction Prepare Record not "
+                    "migrated; tableId doesn't match | "
+              "migrateSingleLogEntry: Transaction Prepare Tombstone not "
+                    "migrated; tableId doesn't match",
+            TestLog::get());
+    EXPECT_EQ(110U, totalBytes);
+    EXPECT_EQ(1U, entryTotals[LOG_ENTRY_TYPE_PREP]);
+    EXPECT_EQ(1U, entryTotals[LOG_ENTRY_TYPE_PREPTOMB]);
 }
 
 TEST_F(MasterServiceTest, migrateSingleLogEntry_decisionRecord) {
@@ -2273,10 +2460,10 @@ TEST_F(MasterServiceTest, takeTabletOwnership_newTablet) {
                 "endKeyHash: 1 state: 0 reads: 0 writes: 0 }\n"
                 "{ tableId: 2 startKeyHash: 0 "
                 "endKeyHash: 1 state: 0 reads: 0 writes: 0 }\n"
-                "{ tableId: 2 startKeyHash: 4 "
-                "endKeyHash: 5 state: 0 reads: 0 writes: 0 }\n"
                 "{ tableId: 2 startKeyHash: 2 "
                 "endKeyHash: 3 state: 0 reads: 0 writes: 0 }\n"
+                "{ tableId: 2 startKeyHash: 4 "
+                "endKeyHash: 5 state: 0 reads: 0 writes: 0 }\n"
                 "{ tableId: 3 startKeyHash: 0 "
                 "endKeyHash: 1 state: 0 reads: 0 writes: 0 }",
                 service->tabletManager.toString());
