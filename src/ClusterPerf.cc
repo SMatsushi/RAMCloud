@@ -2491,7 +2491,7 @@ indexBasic()
 
     // number of objects in the table and in the index
     const uint32_t indexSizes[] = {1, 10, 100, 1000, 10000, 100000, 1000000};
-    const uint32_t numSizes = sizeof(indexSizes)/sizeof(uint32_t);
+    const uint32_t numSizes = static_cast<const uint32_t>(sizeof(indexSizes)/sizeof(uint32_t));
     const uint32_t maxNumObjects = indexSizes[numSizes - 1];
     const uint32_t samplesPerRun = 1000; // How many times to op the same op
 
