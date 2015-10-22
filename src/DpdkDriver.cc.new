@@ -106,14 +106,30 @@ DpdkDriver::DpdkDriver(Context* context,
 
     // initialize the DPDK environment with some default parameters
     const char *argv[] = {"rc", "-c 1", "-n 1"};
-    int argc = static_cast<int>(sizeof(argv) / sizeof(argv[0]));
+    int argc = sizeof(argv) / sizeof(argv[0]);
+    /*
+    string dfname = "dpdkout.log";
+    FILE *f = fopen(dfname.c_str(), "w");
+    if (f == NULL) {
+        throw Exception(HERE,
+                        format("couldn't open log file '%s'", dfname.c_str()),
+                        errno);
+    }
+
+    if (rte_openlog_stream(f) < 0) {
+        throw DriverException(HERE, format(
+            "rte_oepnlog_stream: %s",
+            rte_strerror(rte_errno)));
+    }
+    */
 
     ret = rte_eal_init(argc, const_cast<char**>(argv));
+    //    rte_set_log_level(1);
 
     // create an memory pool for accommodating packet buffers
     packetPool = rte_mempool_create("mbuf_pool", NB_MBUF,
                                       MBUF_SIZE, 32,
-                                      static_cast<uint32_t>(sizeof(struct rte_pktmbuf_pool_private)),
+                                      sizeof(struct rte_pktmbuf_pool_private),
                                       rte_pktmbuf_pool_init, NULL,
                                       rte_pktmbuf_init, NULL,
                                       rte_socket_id(), 0);
@@ -146,7 +162,7 @@ DpdkDriver::DpdkDriver(Context* context,
     // configure some default NIC port parameters
     memset(&portConf, 0, sizeof(portConf));
     portConf.rxmode.max_rx_pkt_len = MAX_PAYLOAD_SIZE +
-            static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader));
+            sizeof(NetUtil::EthernetHeader);
     rte_eth_dev_configure(portId, 1, 1, &portConf);
 
     // setup a NIC/HW-based filter on the ethernet type so that
@@ -191,8 +207,8 @@ DpdkDriver::DpdkDriver(Context* context,
     }
 
     // set the MTU that the NIC port should support
-    ret = rte_eth_dev_set_mtu(portId, static_cast<uint16_t>(MAX_PAYLOAD_SIZE +
-            static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader))));
+    ret = rte_eth_dev_set_mtu(portId, MAX_PAYLOAD_SIZE +
+            sizeof(NetUtil::EthernetHeader));
     if (ret != 0) {
         throw DriverException(HERE, format(
                 "Failed to set the MTU on the Ethernet port: %s",
@@ -262,7 +278,7 @@ DpdkDriver::disconnect()
 uint32_t
 DpdkDriver::getMaxPacketSize()
 {
-    return MAX_PAYLOAD_SIZE - static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader));
+    return MAX_PAYLOAD_SIZE - sizeof(NetUtil::EthernetHeader);
 }
 
 // See docs in Driver class.
