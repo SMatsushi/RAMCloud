@@ -126,7 +126,7 @@ ObjectManager::initOnceEnlisted()
     if (!config->master.disableLogCleaner)
         log.enableCleaner();
 
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch, "ObjectManager::initOnceEnlisted");
     tombstoneRemover.construct(this, &objectMap);
 }
 

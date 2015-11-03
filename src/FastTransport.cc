@@ -82,7 +82,12 @@ Transport::SessionRef
 FastTransport::getSession(const ServiceLocator& serviceLocator,
         uint32_t timeoutMs)
 {
-    Dispatch::Lock lock(context->dispatch);
+    std::string proto = serviceLocator.getProtocol();
+    Dispatch::Lock lock(context->dispatch,
+                        format("FastGetSession:Loc=%s Proto=%s",
+                               serviceLocator.getOriginalString().c_str(),
+                               proto.c_str()));
+
     clientSessions.expire();
     ClientSession* session = clientSessions.get();
     session->init(serviceLocator, timeoutMs);
@@ -203,10 +208,10 @@ void FastTransport::handleIncomingPacket(Driver::Received* received)
                 session->startSession(received->sender,
                                       header->clientSessionHint);
             } else {
-                LOG(WARNING, "bad session hint %d from %s",
+                LOG(WARNING, "bad session hint %d from %s .. neglecting",
                         header->serverSessionHint,
                         received->sender->toString().c_str());
-                sendBadSessionError(header, received->sender);
+                // sendBadSessionError(header, received->sender);
             }
             return;
         }

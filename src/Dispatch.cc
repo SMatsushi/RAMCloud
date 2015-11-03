@@ -77,6 +77,7 @@ Dispatch::Dispatch(bool hasDedicatedThread)
     , mutex("Dispatch::mutex")
     , lockNeeded(0)
     , locked(0)
+    , locker("None")
     , hasDedicatedThread(hasDedicatedThread)
     , slowPollerCycles(Cycles::fromSeconds(.05))
     , profilerFlag(false)
@@ -171,8 +172,9 @@ Dispatch::poll()
         Fence::enter();
         uint64_t newCurrent = Cycles::rdtsc();
         if ((newCurrent - currentTime) > slowPollerCycles) {
-            LOG(WARNING, "Long lockout in poller: %.1f ms",
-                    Cycles::toSeconds(newCurrent - currentTime)*1e03);
+            LOG(WARNING, "Long lockout in poller: %.1f ms by %s",
+                Cycles::toSeconds(newCurrent - currentTime)*1e03,
+                locker.c_str());
         }
         currentTime = newCurrent;
     }
@@ -791,6 +793,9 @@ Dispatch::Timer::stop()
  * not already held).
  */
 static __thread bool thisThreadHasDispatchLock = false;
+std::string  Dispatch::Lock::currentLocker = "None";
+uint64_t     Dispatch::Lock::lockTime    = 0L;
+static uint64_t     tooLongLock = Cycles::fromSeconds(.01);
 
 /**
  * Construct a Lock object, which means we must lock the dispatch
@@ -801,9 +806,10 @@ static __thread bool thisThreadHasDispatchLock = false;
  * \param dispatch
  *      Dispatch object to lock.
  */
-Dispatch::Lock::Lock(Dispatch* dispatch)
-    : dispatch(dispatch), lock()
+Dispatch::Lock::Lock(Dispatch* dispatch, std::string usage)
+        : usage(usage), dispatch(dispatch), lock()
 {
+    uint64_t currentTime;
     if (dispatch->isDispatchThread() || thisThreadHasDispatchLock) {
         return;
     }
@@ -818,8 +824,18 @@ Dispatch::Lock::Lock(Dispatch* dispatch)
     // re-locked itself.
     while (dispatch->locked.load() != 0) {
         // Empty loop.
+        currentTime = Cycles::rdtsc();
+        if ((currentTime - lockTime) > tooLongLock) {
+            throw FatalError(HERE,
+                format("Long lockout in poller: %.1f ms by %s",
+                  Cycles::toSeconds(currentTime - lockTime)*1e03,
+                       currentLocker.c_str()));
+        }
     }
-
+    lockTime = Cycles::rdtsc();
+    currentLocker = usage;
+    dispatch->locker = usage;
+    
     // The following statements ensure that the preceding load completes
     // before the following store (reordering could cause deadlock).
     Fence::sfence();

@@ -109,7 +109,7 @@ static struct FastDpdkTransportFactory : public TransportFactory {
         : TransportFactory("fast+dpdk", "fast+dpdk") {}
     Transport* createTransport(Context* context,
             const ServiceLocator* localServiceLocator) {
-        LOG(NOTICE, "Trying to createTransport");
+        LOG(NOTICE, "Trying to createTransport: fast+dpdk");
         return new FastTransport(context,
                 new DpdkDriver(context, localServiceLocator));
         LOG(NOTICE, "Transport Created");
@@ -129,6 +129,7 @@ TransportManager::TransportManager(Context* context)
     , mutex("TransportManager::mutex")
     , sessionTimeoutMs(0)
     , mockRegistrations(0)
+    , tcpOnly(false)
 {
     transportFactories.push_back(&tcpTransportFactory);
     transportFactories.push_back(&fastUdpTransportFactory);
@@ -161,6 +162,13 @@ TransportManager::~TransportManager()
         delete transport;
 }
 
+void
+TransportManager::setTcpOnly(bool tcpOnlyMode)
+{
+    LOG(NOTICE, "set tcpOnly=%s", tcpOnlyMode ? "true" : "false");
+    TransportManager::tcpOnly=tcpOnlyMode;
+}
+
 /**
  * This method is invoked only on servers; it creates transport(s) that will be
  * used to receive RPC requests.  These transports can also be used for outgoing
@@ -174,8 +182,11 @@ TransportManager::~TransportManager()
 void
 TransportManager::initialize(const char* localServiceLocator)
 {
+    LOG(NOTICE,"Starting initialize: loc=%s tcpOnly=%d",
+        localServiceLocator, tcpOnly);
     isServer = true;
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch, format("TransportManager: Loc=%s",
+                                                  localServiceLocator));
     std::vector<ServiceLocator> locators =
             ServiceLocator::parseServiceLocators(localServiceLocator);
 
@@ -365,8 +376,19 @@ TransportManager::openSessionInternal(const string& serviceLocator)
     foreach (ServiceLocator& locator, locators) {
         for (uint32_t i = 0; i < transportFactories.size(); i++) {
             TransportFactory* factory = transportFactories[i];
-            if (!factory->supports(locator.getProtocol().c_str())) {
+            const char *locCp;
+            if (!factory->supports(locCp = locator.getProtocol().c_str())) {
                 continue;
+            }
+
+            LOG(NOTICE,"localtor: %s", locCp);
+            if (tcpOnly) {
+                if (strcmp(locCp,"tcp")) {
+                    // not match to tcp
+                    LOG(WARNING,"tcpOlny mode: %s not supported. skipped.",
+                        locCp);
+                    continue;
+                }
             }
 
             if (transports[i] == NULL) {
@@ -375,7 +397,9 @@ TransportManager::openSessionInternal(const string& serviceLocator)
                 // transport may depend on physical devices that don't
                 // exist on this machine).
                 try {
-                    Dispatch::Lock lock(context->dispatch);
+                    Dispatch::Lock lock(context->dispatch,
+                       format("TransportManager::openSessionInternal:"
+                              "locator=%s", locator.getProtocol().c_str()));
                     transports[i] = factory->createTransport(context, NULL);
                     for (uint32_t j = 0; j < registeredBases.size(); j++) {
                         transports[i]->registerMemory(registeredBases[j],
@@ -425,7 +449,8 @@ TransportManager::openSessionInternal(const string& serviceLocator)
 void
 TransportManager::registerMemory(void* base, size_t bytes)
 {
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch,
+                        "TransportManager::registerMemory");
     foreach (auto transport, transports) {
         if (transport != NULL)
             transport->registerMemory(base, bytes);
@@ -460,7 +485,8 @@ uint32_t TransportManager::getSessionTimeout() const
 void
 TransportManager::dumpStats()
 {
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch,
+                        "TransportManager::dumpStats");
     foreach (auto transport, transports) {
         if (transport != NULL)
             transport->dumpStats();
@@ -473,7 +499,8 @@ TransportManager::dumpStats()
 void
 TransportManager::dumpTransportFactories()
 {
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch,
+                        "TransportManager::dumTransportFactories");
     string list;
     string separator = "";
     foreach (auto factory, transportFactories) {

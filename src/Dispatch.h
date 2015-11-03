@@ -231,9 +231,13 @@ class Dispatch {
      */
     class Lock {
       public:
-        explicit Lock(Dispatch* dispatch);
+        explicit Lock(Dispatch* dispatch, std::string usage);
         ~Lock();
       PRIVATE:
+        std::string usage;
+        static std::string  currentLocker;
+        static uint64_t      lockTime;
+
         /// The Dispatch object associated with this Lock.
         Dispatch* dispatch;
 
@@ -321,6 +325,9 @@ class Dispatch {
 
     // Nonzero means the dispatch thread is locked.
     Atomic<int> locked;
+
+    // locker Info for debug.
+    std::string locker;
 
     /**
      * True if there is a thread which owns this dispatch (this is

@@ -144,15 +144,18 @@ CoordinatorServerList::enlistServer(ServiceMask serviceMask,
         pair->entry->expectedReadMBytesPerSec = readSpeed;
     }
     LOG(NOTICE, "Enlisting server at %s (server id %s) supporting "
-        "services: %s", serviceLocator, id.toString().c_str(),
+        "Services: %s", serviceLocator, id.toString().c_str(),
         serviceMask.toString().c_str());
     persistAndPropagate(lock, pair->entry.get(),
             ServerChangeEvent::SERVER_ADDED);
+    LOG(NOTICE, "persisted");
     if (serviceMask.has(WireFormat::BACKUP_SERVICE)) {
         LOG(DEBUG, "Backup at id %s has %u MB/s read",
             id.toString().c_str(), readSpeed);
+        LOG(NOTICE, "creatingReplicationGroups");
         createReplicationGroups(lock);
     }
+    LOG(NOTICE, "returning");
     return id;
 }
 
@@ -656,12 +659,14 @@ CoordinatorServerList::persistAndPropagate(const Lock& lock, Entry* entry,
         ServerChangeEvent event)
 {
     TEST_LOG("Persisting %s", entry->serverId.toString().c_str());
+    LOG(NOTICE, "Persisting %s", entry->serverId.toString().c_str());
 
     // Add a new update to the list of those in progress for this entry,
     // then write the entire entry to external storage to ensure that cluster
     // notification completes eventually, even in the presence of
     // coordinator crashes.
     entry->pendingUpdates.emplace_back();
+
     ProtoBuf::ServerListEntry_Update* update = &entry->pendingUpdates.back();
     update->set_status(uint32_t(entry->status));
     update->set_version(version + 1);
@@ -669,9 +674,11 @@ CoordinatorServerList::persistAndPropagate(const Lock& lock, Entry* entry,
             ->updateManager.nextSequenceNumber());
     entry->sync(context->externalStorage);
 
+    LOG(NOTICE, "enqueuing change");
     // Notify local ServerTrackers about the change.
     foreach (ServerTrackerInterface* tracker, trackers)
         tracker->enqueueChange(*entry, event);
+    LOG(NOTICE, "fireling callbacks");
     foreach (ServerTrackerInterface* tracker, trackers)
         tracker->fireCallback();
 

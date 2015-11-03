@@ -44,7 +44,7 @@ WorkerSession::~WorkerSession()
 {
     // Make sure that the underlying session is released while the
     // dispatch thread is locked.
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch, format("~WorkerSesssion"));
     wrapped = NULL;
 }
 
@@ -54,7 +54,8 @@ WorkerSession::abort()
 {
     // Must make sure that the dispatch thread isn't running when we
     // invoke the real abort.
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch,
+                        format("WorkerSession::abort"));
     return wrapped->abort();
 }
 
@@ -74,7 +75,8 @@ WorkerSession::getRpcInfo()
 {
     // Must make sure that the dispatch thread isn't running when we
     // invoke the real getRpcInfo.
-    Dispatch::Lock lock(context->dispatch);
+    Dispatch::Lock lock(context->dispatch,
+                        format("WorkerSession:getRpcInfo"));
     return wrapped->getRpcInfo();
 }
 

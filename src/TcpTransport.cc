@@ -640,7 +640,9 @@ TcpTransport::TcpSession::TcpSession(TcpTransport& transport,
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
     /// Arrange for notification whenever the server sends us data.
-    Dispatch::Lock lock(transport.context->dispatch);
+    Dispatch::Lock lock(transport.context->dispatch,
+                        format("TcpSession: connect to %s",
+                               getServiceLocator().c_str()));
     clientIoHandler.construct(fd, *this);
     message.construct(static_cast<Buffer*>(NULL), this);
 }
@@ -716,7 +718,8 @@ TcpTransport::TcpSession::close()
         transport.clientRpcPool.destroy(&rpc);
     }
     if (clientIoHandler) {
-        Dispatch::Lock lock(transport.context->dispatch);
+        Dispatch::Lock lock(transport.context->dispatch,
+                            format("TcpSession::close"));
         clientIoHandler.destroy();
     }
 }

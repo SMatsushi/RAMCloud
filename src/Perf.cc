@@ -756,7 +756,8 @@ double lockInDispThrd()
     Dispatch dispatch(false);
     uint64_t start = Cycles::rdtsc();
     for (int i = 0; i < count; i++) {
-        Dispatch::Lock lock(&dispatch);
+        Dispatch::Lock lock(&dispatch,
+                            format("Perf::lockInDispThrd: %d", i));
     }
     uint64_t stop = Cycles::rdtsc();
     return Cycles::toSeconds(stop - start)/count;
@@ -790,7 +791,8 @@ double lockNonDispThrd()
 
     uint64_t start = Cycles::rdtsc();
     for (int i = 0; i < count; i++) {
-        Dispatch::Lock lock(dispatch);
+        Dispatch::Lock lock(dispatch,
+                            format("Perf::lockNonDispThrd: %d", i));
     }
     uint64_t stop = Cycles::rdtsc();
     flag = 0;

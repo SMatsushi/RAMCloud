@@ -272,7 +272,17 @@ DpdkDriver::release(char *payload)
 {
     // Must sync with the dispatch thread, since this method could potentially
     // be invoked in a worker.
-    Dispatch::Lock _(context->dispatch);
+    Tub<Dispatch::Lock> lock;
+    uint64_t start = Cycles::rdtsc();
+    lock.construct(context->dispatch,
+                     format("DpdkDriver::release: payload=%lx",
+                            reinterpret_cast<uint64_t>(payload)));
+    uint64_t now = Cycles::rdtsc();
+    double elapsedMs = Cycles::toSeconds(now - start) * 1e03;
+     if (elapsedMs > 1.0) {
+       LOG(NOTICE, "Too much time acquiring dispatch lock: %.1f ms", elapsedMs);
+    }
+    start = now;
 
     // Note: the payload is actually contained in a PacketBuf structure,
     // which we return to a pool for reuse later.
@@ -280,8 +290,20 @@ DpdkDriver::release(char *payload)
     assert(packetBufsUtilized >= 0);
     packetBufPool.destroy(
         reinterpret_cast<PacketBuf*>(payload - OFFSET_OF(PacketBuf, payload)));
+    now = Cycles::rdtsc();
+    elapsedMs = Cycles::toSeconds(now - start) * 1e03;
+     if (elapsedMs > 1.0) {
+       LOG(NOTICE, "Too much time freeing packet: %.1f ms", elapsedMs);
+    }
+    start = now;
+    
+    lock.destroy();
+    now = Cycles::rdtsc();
+    elapsedMs = Cycles::toSeconds(now - start) * 1e03;
+     if (elapsedMs > 1.0) {
+       LOG(NOTICE, "Too much time releasing lock: %.1f ms", elapsedMs);
+    }
 }
-
 // See docs in Driver class.
 void
 DpdkDriver::sendPacket(const Address *addr,
