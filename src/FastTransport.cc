@@ -82,15 +82,45 @@ Transport::SessionRef
 FastTransport::getSession(const ServiceLocator& serviceLocator,
         uint32_t timeoutMs)
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.003);
+
     std::string proto = serviceLocator.getProtocol();
+    previous = Cycles::rdtsc();
     Dispatch::Lock lock(context->dispatch,
                         format("FastGetSession:Loc=%s Proto=%s",
                                serviceLocator.getOriginalString().c_str(),
                                proto.c_str()));
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "Dispatch::Lock: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
 
     clientSessions.expire();
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "clientSesssions.expire: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     ClientSession* session = clientSessions.get();
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "clientSesssions.get: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     session->init(serviceLocator, timeoutMs);
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "sessionInit: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+
     return session;
 }
 
@@ -1329,6 +1359,10 @@ FastTransport::ClientSession::connect()
 bool
 FastTransport::ClientSession::expire(NonIdleAction nonIdleAction)
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.003);
+    previous = Cycles::rdtsc();
+
     if (refCount > 0) {
         if (nonIdleAction != IGNORE_NON_IDLE) {
             LOG(ERROR, "refCount %d in session for %s", refCount.load(),
@@ -1338,6 +1372,7 @@ FastTransport::ClientSession::expire(NonIdleAction nonIdleAction)
         }
         return false;
     }
+
     for (uint32_t i = 0; i < numChannels; i++) {
         if (channels[i].currentRpc) {
             if (nonIdleAction != IGNORE_NON_IDLE) {
@@ -1349,6 +1384,13 @@ FastTransport::ClientSession::expire(NonIdleAction nonIdleAction)
             return false;
         }
     }
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "getServiceLocator: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     if (!channelQueue.empty()) {
         if (nonIdleAction != IGNORE_NON_IDLE) {
             LOG(ERROR, "channelQueue not empty in session for %s",
@@ -1358,7 +1400,20 @@ FastTransport::ClientSession::expire(NonIdleAction nonIdleAction)
             }
         return false;
     }
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "!channelQueue.empty: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     abort();
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "abort: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+
     return true;
 }
 

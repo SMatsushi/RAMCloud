@@ -250,7 +250,7 @@ def default(
 
 def basic(name, options, cluster_args, client_args):
     if 'master_args' not in cluster_args:
-        cluster_args['master_args'] = '-t 4000'
+        cluster_args['master_args'] = '--maxCores 6 -t 4000'
     if cluster_args['timeout'] < 250:
         cluster_args['timeout'] = 250
     cluster.run(client='%s/ClusterPerf %s %s' %

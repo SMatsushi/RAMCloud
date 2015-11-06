@@ -138,6 +138,10 @@ WorkerManager::~WorkerManager()
 void
 WorkerManager::handleRpc(Transport::ServerRpc* rpc)
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.001);
+    previous = Cycles::rdtsc();
+
     // Find the service for this RPC.
     const WireFormat::RequestCommon* header;
     header = rpc->requestPayload.getStart<WireFormat::RequestCommon>();
@@ -161,11 +165,18 @@ WorkerManager::handleRpc(Transport::ServerRpc* rpc)
                     STATUS_UNIMPLEMENTED_REQUEST);
         }
         rpc->sendReply();
+        currentTime = Cycles::rdtsc();
+        if ((currentTime - previous) > tooSlowPoll) {
+            LOG(WARNING, "rpc->sendReply: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+        }
+
         return;
     }
     int level = RpcLevel::getLevel(WireFormat::Opcode(header->opcode));
+#define LOG_RPCS
 #ifdef LOG_RPCS
-    LOG(NOTICE, "Received %s RPC at %lu with %u bytes",
+    LOG(NOTICE, "Received %s RPC at %lx with %u bytes",
             WireFormat::opcodeSymbol(header->opcode),
             reinterpret_cast<uint64_t>(rpc),
             rpc->requestPayload.size());
@@ -202,17 +213,52 @@ WorkerManager::handleRpc(Transport::ServerRpc* rpc)
     }
 #endif
 
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "busyTreads.size: %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     levels[level].requestsRunning++;
 
     // Hand off the RPC to a worker thread.
     assert(!idleThreads.empty());
     Worker* worker = idleThreads.back();
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "idleThreads.back(): %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     idleThreads.pop_back();
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "idleThreads.pop_back(): %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     worker->opcode = WireFormat::Opcode(header->opcode);
     worker->level = level;
     worker->handoff(rpc);
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "handoff(rpc): %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     worker->busyIndex = downCast<int>(busyThreads.size());
     busyThreads.push_back(worker);
+
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "busyThreads.push_back: %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    
 }
 
 /**
@@ -234,12 +280,17 @@ WorkerManager::idle()
 int
 WorkerManager::poll()
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.001);
+
     int foundWork = 0;
 
     // Each iteration of the following loop checks the status of one active
     // worker. The order of iteration is crucial, since it allows us to
     // remove a worker from busyThreads in the middle of the loop without
     // interfering with the remaining iterations.
+    previous = Cycles::rdtsc();
+        
     for (int i = downCast<int>(busyThreads.size()) - 1; i >= 0; i--) {
         Worker* worker = busyThreads[i];
         assert(worker->busyIndex == i);
@@ -295,6 +346,12 @@ WorkerManager::poll()
                 }
             }
         }
+        currentTime = Cycles::rdtsc();
+        if ((currentTime - previous) > tooSlowPoll) {
+            LOG(WARNING, "Check Active worker[%d]: %.1f ms", i,
+                Cycles::toSeconds(currentTime - previous)*1e03);
+        }
+        previous = currentTime;
 
         // Now send the response, if any.
         if (rpc != NULL) {
@@ -325,6 +382,12 @@ WorkerManager::poll()
             worker->busyIndex = -1;
             idleThreads.push_back(worker);
         }
+        currentTime = Cycles::rdtsc();
+        if ((currentTime - previous) > tooSlowPoll) {
+            LOG(WARNING, "Remove Busy Thread [%d]: %.1f ms", i,
+                Cycles::toSeconds(currentTime - previous)*1e03);
+        }
+        previous = currentTime;
     }
     return foundWork;
 }
@@ -510,6 +573,10 @@ Worker::exit()
 void
 Worker::handoff(Transport::ServerRpc* newRpc)
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.001);
+    previous = Cycles::rdtsc();
+
     assert(rpc == NULL);
     rpc = newRpc;
     Fence::leave();
@@ -521,6 +588,13 @@ Worker::handoff(Transport::ServerRpc* newRpc)
     }
 #endif
     int prevState = state.exchange(WORKING);
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "prevState: %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     if (prevState == SLEEPING) {
         // The worker got tired of polling and went to sleep, so we
         // have to do extra work to wake it up.
@@ -533,7 +607,13 @@ Worker::handoff(Transport::ServerRpc* newRpc)
             // or unwinding the RPC.  As of 6/2011 it isn't clear what the
             // right action is, so things just get left in limbo.
         }
+        currentTime = Cycles::rdtsc();
+        if ((currentTime - previous) > tooSlowPoll) {
+            LOG(WARNING, "sys->futexWake: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+        }
     }
+
 }
 
 /**

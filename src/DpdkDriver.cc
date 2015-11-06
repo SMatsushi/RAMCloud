@@ -369,6 +369,10 @@ int
 DpdkDriver::Poller::poll()
 {
 #define MAX_MBUFS_ON_STACK 32
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.003);
+
+
     // avoid heap allocations on the poll path by temporarily
     // keeping a limited number of packet buffers on stack.
     struct rte_mbuf *mPkts[MAX_MBUFS_ON_STACK];
@@ -377,6 +381,8 @@ DpdkDriver::Poller::poll()
     unsigned j;
     unsigned itemCnt = 0;
     unsigned totalPktRx = 0;
+
+    previous = Cycles::rdtsc();
 
     // attempt to dequeue a batch of received packets from the NIC
     // as well as from the loopback ring.
@@ -400,6 +406,13 @@ DpdkDriver::Poller::poll()
                 reinterpret_cast<void**>(&mPkts[nbRx + j]));
     }
 
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "Ring Dequeue: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     // process received packets by constructing appropriate Received
     // objects, copying the payload from the DPDK packet buffers and
     // passing them to the fast transport layer for further processing.
@@ -422,6 +435,12 @@ DpdkDriver::Poller::poll()
         driver->incomingPacketHandler->handlePacket(&received);
         rte_pktmbuf_free(m);
     }
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "Receive Packet: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+
     return 1;
 }
 

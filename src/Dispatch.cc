@@ -31,7 +31,7 @@
 // Uncomment to print out a human readable name for any poller that takes longer
 // than slowPollerCycles to complete. Useful for determining which poller is
 // responsible for "Long gap" messages.
-// #define DEBUG_SLOW_POLLERS 1
+#define DEBUG_SLOW_POLLERS 1
 
 namespace RAMCloud {
 
@@ -79,7 +79,7 @@ Dispatch::Dispatch(bool hasDedicatedThread)
     , locked(0)
     , locker("None")
     , hasDedicatedThread(hasDedicatedThread)
-    , slowPollerCycles(Cycles::fromSeconds(.05))
+    , slowPollerCycles(Cycles::fromSeconds(.01))
     , profilerFlag(false)
     , totalElements(0)
     , pollingTimes(NULL)
@@ -193,6 +193,12 @@ Dispatch::poll()
         }
 #endif
     }
+
+    uint64_t prev, now;
+    prev = Cycles::rdtsc();
+    uint64_t p, n;
+    p = prev;
+
     if (readyFd >= 0) {
         int fd = readyFd;
 
@@ -218,6 +224,14 @@ Dispatch::poll()
             if (events != 0) {
                 file->handleFileEvent(events);
                 result++;
+                n = Cycles::rdtsc();
+                if ((n  - p) > slowPollerCycles) {
+                    LOG(WARNING, "ReadFd fd=%d id=%d: %.1f ms",
+                        fd, id,
+                        Cycles::toSeconds(n - p)*1e03);
+                }
+                p = n;
+
             }
 
             // Must reenable the event for this file, since it was automatically
@@ -230,8 +244,20 @@ Dispatch::poll()
                 file->invocationId = 0;
                 file->setEvents(file->events);
             }
+            n = Cycles::rdtsc();
+            if ((n  - p) > slowPollerCycles) {
+                LOG(WARNING, "ReadFd setEvents: %.1f ms",
+                    Cycles::toSeconds(n - p)*1e03);
+            }
         }
     }
+    now = Cycles::rdtsc();
+    if ((now  - prev) > slowPollerCycles) {
+        LOG(WARNING, "Slow readyFd: %.1f ms",
+                Cycles::toSeconds(now - prev)*1e03);
+    }
+    prev = now;
+
     if (currentTime >= earliestTriggerTime) {
         std::lock_guard<SpinLock> lock(timerMutex);
         // Looks like a timer may have triggered. Check all the timers and
@@ -270,6 +296,7 @@ Dispatch::poll()
             }
         }
 
+
         // Compute a new value for earliestTriggerTime. Can't do this
         // in the loop above, because one timer handler could delete
         // another, which can rearrange the list and cause us to miss
@@ -282,6 +309,12 @@ Dispatch::poll()
             }
         }
     }
+    now = Cycles::rdtsc();
+    if ((now  - prev) > slowPollerCycles) {
+        LOG(WARNING, "Slow timer: %.1f ms",
+            Cycles::toSeconds(now - prev)*1e03);
+    }
+    
     return result;
 }
 

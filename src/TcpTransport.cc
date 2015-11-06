@@ -209,12 +209,24 @@ TcpTransport::AcceptHandler::AcceptHandler(int fd, TcpTransport& transport)
 void
 TcpTransport::AcceptHandler::handleFileEvent(int events)
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.001);
+
     struct sockaddr_in sin;
+    previous = Cycles::rdtsc();
+
     socklen_t socklen = sizeof(sin);
 
     int acceptedFd = sys->accept(transport.listenSocket,
                                  reinterpret_cast<sockaddr*>(&sin),
                                  &socklen);
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "sys->accept events=%d: %.1f ms", events,
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
+
     if (acceptedFd < 0) {
         switch (errno) {
             // According to the man page for accept, you're supposed to
@@ -245,6 +257,12 @@ TcpTransport::AcceptHandler::handleFileEvent(int events)
         setEvents(0);
         sys->close(transport.listenSocket);
         transport.listenSocket = -1;
+        currentTime = Cycles::rdtsc();
+        if ((currentTime - previous) > tooSlowPoll) {
+            LOG(WARNING, "sys->close errrno=%d: %.1f ms", errno,
+                Cycles::toSeconds(currentTime - previous)*1e03);
+        }
+
         return;
     }
 
@@ -254,6 +272,12 @@ TcpTransport::AcceptHandler::handleFileEvent(int events)
     // of requests from the same client).
     int flag = 1;
     setsockopt(acceptedFd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "setsockopt: %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
+    previous = currentTime;
 
     // At this point we have successfully opened a client connection.
     // Save information about it and create a handler for incoming
@@ -263,6 +287,11 @@ TcpTransport::AcceptHandler::handleFileEvent(int events)
         transport.sockets.resize(acceptedFd + 1);
     }
     transport.sockets[acceptedFd] = new Socket(acceptedFd, transport, sin);
+    currentTime = Cycles::rdtsc();
+    if ((currentTime - previous) > tooSlowPoll) {
+        LOG(WARNING, "new Socket: %.1f ms",
+            Cycles::toSeconds(currentTime - previous)*1e03);
+    }
 }
 
 /**
@@ -301,7 +330,12 @@ TcpTransport::ServerSocketHandler::ServerSocketHandler(int fd,
 void
 TcpTransport::ServerSocketHandler::handleFileEvent(int events)
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.001);
+
     Socket* socket = transport.sockets[fd];
+    previous = Cycles::rdtsc();
+
     assert(socket != NULL);
     try {
         if (events & Dispatch::FileEvent::READABLE) {
@@ -309,13 +343,34 @@ TcpTransport::ServerSocketHandler::handleFileEvent(int events)
                 socket->rpc = transport.serverRpcPool.construct(socket,
                                                                  fd, transport);
             }
+            currentTime = Cycles::rdtsc();
+            if ((currentTime - previous) > tooSlowPoll) {
+                LOG(WARNING, "READABLE construct events=%d fd=%d: %.1f ms", events, fd,
+                    Cycles::toSeconds(currentTime - previous)*1e03);
+            }
+            previous = currentTime;
+
             if (socket->rpc->message.readMessage(fd)) {
+                currentTime = Cycles::rdtsc();
+                if ((currentTime - previous) > tooSlowPoll) {
+                    LOG(WARNING, "READABLE readMessage events=%d fd=%d: %.1f ms", events, fd,
+                        Cycles::toSeconds(currentTime - previous)*1e03);
+                }
+                previous = currentTime;
+
                 // The incoming request is complete; pass it off for servicing.
                 TcpServerRpc *rpc = socket->rpc;
                 socket->rpc = NULL;
                 transport.context->workerManager->handleRpc(rpc);
             }
+            currentTime = Cycles::rdtsc();
+            if ((currentTime - previous) > tooSlowPoll) {
+                LOG(WARNING, "READABLE handleRpc events=%d fd=%d: %.1f ms", events, fd,
+                    Cycles::toSeconds(currentTime - previous)*1e03);
+            }
+            previous = currentTime;
         }
+
         if (events & Dispatch::FileEvent::WRITABLE) {
             while (true) {
                 if (socket->rpcsWaitingToReply.empty()) {
@@ -335,6 +390,12 @@ TcpTransport::ServerSocketHandler::handleFileEvent(int events)
                 transport.serverRpcPool.destroy(&rpc);
                 socket->bytesLeftToSend = -1;
             }
+            currentTime = Cycles::rdtsc();
+            if ((currentTime - previous) > tooSlowPoll) {
+                LOG(WARNING, "WRITABLE event=%d: %.1f ms", events,
+                    Cycles::toSeconds(currentTime - previous)*1e03);
+            }
+            previous = currentTime;
         }
     } catch (TransportException& e) {
         transport.closeSocket(fd);
@@ -845,6 +906,10 @@ TcpTransport::ClientSocketHandler::ClientSocketHandler(int fd,
 void
 TcpTransport::ClientSocketHandler::handleFileEvent(int events)
 {
+    uint64_t previous, currentTime;
+    static const uint64_t tooSlowPoll = Cycles::fromSeconds(.001);
+
+    previous = Cycles::rdtsc();
     try {
         if (events & Dispatch::FileEvent::READABLE) {
             if (session.message->readMessage(fd)) {
@@ -860,6 +925,12 @@ TcpTransport::ClientSocketHandler::handleFileEvent(int events)
                 }
                 session.message.construct(static_cast<Buffer*>(NULL), &session);
             }
+            currentTime = Cycles::rdtsc();
+            if ((currentTime - previous) > tooSlowPoll) {
+                LOG(WARNING, "READABLE event=%d: %.1f ms", events,
+                    Cycles::toSeconds(currentTime - previous)*1e03);
+            }
+            previous = currentTime;
         }
         if (events & Dispatch::FileEvent::WRITABLE) {
             while (!session.rpcsWaitingToSend.empty()) {
@@ -878,6 +949,10 @@ TcpTransport::ClientSocketHandler::handleFileEvent(int events)
                 session.bytesLeftToSend = -1;
             }
             setEvents(Dispatch::FileEvent::READABLE);
+            if ((currentTime - previous) > tooSlowPoll) {
+                LOG(WARNING, "WRITABLE event=%d: %.1f ms", events,
+                    Cycles::toSeconds(currentTime - previous)*1e03);
+            }
         }
     } catch (TransportException& e) {
         session.abort();
