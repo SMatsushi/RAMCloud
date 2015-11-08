@@ -174,9 +174,8 @@ WorkerManager::handleRpc(Transport::ServerRpc* rpc)
         return;
     }
     int level = RpcLevel::getLevel(WireFormat::Opcode(header->opcode));
-#define LOG_RPCS
 #ifdef LOG_RPCS
-    LOG(NOTICE, "Received %s RPC at %lx with %u bytes",
+    LOG(NOTICE, "Received %s RPC at 0x%lx with %u bytes",
             WireFormat::opcodeSymbol(header->opcode),
             reinterpret_cast<uint64_t>(rpc),
             rpc->requestPayload.size());
@@ -209,6 +208,29 @@ WorkerManager::handleRpc(Transport::ServerRpc* rpc)
         Service::Rpc serviceRpc(NULL, &rpc->requestPayload, &rpc->replyPayload);
         services[WireFormat::MASTER_SERVICE]->service.handleRpc(&serviceRpc);
         rpc->sendReply();
+        return;
+    }
+#endif
+
+// #define PING_SERVICE_BY_DISPATCH
+#ifdef  PING_SERVICE_BY_DISPATCH
+    // Temporary fix for slow ping response, which cause chained server crash..
+    if (((header->opcode == WireFormat::PING) ||
+         (header->opcode == WireFormat::PROXY_PING))
+         && (header->service == WireFormat::PING_SERVICE)) {
+        //    LOG(WARNING, "Servicing %s in handleRpc",
+        //      WireFormat::opcodeSymbol(header->opcode));
+        Service::Rpc serviceRpc(NULL, &rpc->requestPayload, &rpc->replyPayload);
+        assert(context->services[WireFormat::PING_SERVICE]);
+        // RequestCommon::opcode is uint16_t not WireFormat::Opcode
+        context->services[WireFormat::PING_SERVICE]->dispatch(
+            static_cast<WireFormat::Opcode>(header->opcode), &serviceRpc);
+        rpc->sendReply();
+        currentTime = Cycles::rdtsc();
+        if ((currentTime - previous) > tooSlowPoll) {
+            LOG(WARNING, "Slow Ping service: %.1f ms",
+                Cycles::toSeconds(currentTime - previous)*1e03);
+        }
         return;
     }
 #endif

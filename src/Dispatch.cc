@@ -859,10 +859,19 @@ Dispatch::Lock::Lock(Dispatch* dispatch, std::string usage)
         // Empty loop.
         currentTime = Cycles::rdtsc();
         if ((currentTime - lockTime) > tooLongLock) {
+#define LONG_LOCK_ABORT
+#ifdef LONG_LOCK_ABORT
+     // exit(1) to quit process with error and force cluster.py abort
+     // through ssh
             throw FatalError(HERE,
-                format("Long lockout in poller: %.1f ms by %s",
+                             format("Long lockout in poller: %.1f ms by %s",
+                                    Cycles::toSeconds(currentTime - lockTime)*1e03,
+                                    currentLocker.c_str()), 1);
+#else
+            LOG(WARNING, "Long lockout in poller: %.1f ms by %s",
                   Cycles::toSeconds(currentTime - lockTime)*1e03,
-                       currentLocker.c_str()));
+                       currentLocker.c_str());
+#endif
         }
     }
     lockTime = Cycles::rdtsc();

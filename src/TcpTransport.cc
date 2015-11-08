@@ -949,6 +949,7 @@ TcpTransport::ClientSocketHandler::handleFileEvent(int events)
                 session.bytesLeftToSend = -1;
             }
             setEvents(Dispatch::FileEvent::READABLE);
+            currentTime = Cycles::rdtsc();
             if ((currentTime - previous) > tooSlowPoll) {
                 LOG(WARNING, "WRITABLE event=%d: %.1f ms", events,
                     Cycles::toSeconds(currentTime - previous)*1e03);

@@ -253,6 +253,7 @@ def basic(name, options, cluster_args, client_args):
         cluster_args['master_args'] = '--maxCores 6 -t 4000'
     if cluster_args['timeout'] < 250:
         cluster_args['timeout'] = 250
+    print('timeout=%d' % (cluster_args['timeout']))
     cluster.run(client='%s/ClusterPerf %s %s' %
             (obj_path, flatten_args(client_args), name), **cluster_args)
     print(get_client_log(), end='')
