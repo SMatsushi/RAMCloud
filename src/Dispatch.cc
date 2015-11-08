@@ -859,7 +859,7 @@ Dispatch::Lock::Lock(Dispatch* dispatch, std::string usage)
         // Empty loop.
         currentTime = Cycles::rdtsc();
         if ((currentTime - lockTime) > tooLongLock) {
-#define LONG_LOCK_ABORT
+// #define LONG_LOCK_ABORT
 #ifdef LONG_LOCK_ABORT
      // exit(1) to quit process with error and force cluster.py abort
      // through ssh

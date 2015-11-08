@@ -212,7 +212,7 @@ WorkerManager::handleRpc(Transport::ServerRpc* rpc)
     }
 #endif
 
-// #define PING_SERVICE_BY_DISPATCH
+#define PING_SERVICE_BY_DISPATCH
 #ifdef  PING_SERVICE_BY_DISPATCH
     // Temporary fix for slow ping response, which cause chained server crash..
     if (((header->opcode == WireFormat::PING) ||

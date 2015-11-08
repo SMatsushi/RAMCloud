@@ -21,10 +21,14 @@ then
 fi
 
 # use Dpdk among client and servers, tcp to/from coordinator
-# with shorter default timeout (250s)
-cmd="scripts/clusterperf.py -v --transport=fast+dpdk --timeout=100 basic"
+# with default timeout (250s)
+# cmd="scripts/clusterperf.py -v --transport=fast+dpdk basic"
+
+# with shorter timeout 100s because cluster.py doesnot abort with Exception
+# cmd="scripts/clusterperf.py -v --transport=fast+dpdk --timeout=100 basic"
+
 # extend timout but it crashed after long wait.
-# cmd="scripts/clusterperf.py -v --transport=fast+dpdk --timeout=2000 basic"
+cmd="scripts/clusterperf.py -v --transport=fast+dpdk --timeout=1500 basic"
 
 # Use TCP instead
 # cmd="scripts/clusterperf.py -v --transport=tcp basic"
