@@ -72,6 +72,7 @@ DpdkDriver::DpdkDriver(Context* context,
 , portId(0)
 , packetPool(NULL)
 , loopbackRing(NULL)
+, nic_supports_filter(true)
 {
     struct ether_addr mac;
     struct rte_eth_link link;
@@ -159,7 +160,11 @@ DpdkDriver::DpdkDriver(Context* context,
     ethertype_filter.priority_en = 0;
     ethertype_filter.priority = 0;
 
-    rte_eth_dev_add_ethertype_filter(portId, 0, &ethertype_filter, 0);
+    ret = rte_eth_dev_add_ethertype_filter(portId, 0, &ethertype_filter, 0);
+    if (ret < 0) {
+      LOG(WARNING, "failed to add ethertype filter\n");
+      nic_supports_filter = false;
+    }
 #else
     struct rte_eth_ethertype_filter filter;
 
@@ -167,12 +172,14 @@ DpdkDriver::DpdkDriver(Context* context,
                                        RTE_ETH_FILTER_ETHERTYPE);
     if (ret < 0) {
       LOG(WARNING, "ethertype filter is not supported on port %u.\n", portId);
+      nic_supports_filter = false;
     } else {
       memset(&filter, 0, sizeof(filter));
       ret = rte_eth_dev_filter_ctrl(portId, RTE_ETH_FILTER_ETHERTYPE,
                                     RTE_ETH_FILTER_ADD, &filter);
       if (ret < 0) {
         LOG(WARNING, "failed to add ethertype filter\n");
+        nic_supports_filter = false;
       }
     }
 #endif
@@ -386,6 +393,16 @@ DpdkDriver::Poller::poll()
         m = mPkts[j];
         rte_prefetch0(rte_pktmbuf_mtod(m, void *));
         PacketBuf * rec_buffer = driver->packetBufPool.construct();
+        if (!driver->nic_supports_filter) {
+          char *data = rte_pktmbuf_mtod(m, char *);
+          auto& eth_header = *reinterpret_cast<EthernetHeader*>(data);
+          if (eth_header.etherType != HTONS(NetUtil::EthPayloadType::FAST)) {
+            LOG(DEBUG, "unknown ether type: %x\n", NTOHS(eth_header.etherType));
+            driver->packetBufPool.destroy(rec_buffer);
+            rte_pktmbuf_free(m);
+            continue;
+          }
+        }
         driver->packetBufsUtilized++;
         Received received;
         received.len = rte_pktmbuf_data_len(m) -
