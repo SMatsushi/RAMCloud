@@ -135,6 +135,14 @@ class DpdkDriver : public Driver
     /// the HW queues.
     struct rte_ring *loopbackRing;
 
+    bool nic_supports_filter;
+    struct EthernetHeader {
+        uint8_t destAddress[6];
+        uint8_t sourceAddress[6];
+        uint16_t etherType; // network order
+        uint16_t length;    // host order, length of payload
+    } __attribute__((packed));
+
     DISALLOW_COPY_AND_ASSIGN(DpdkDriver);
 };
 
