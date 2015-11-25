@@ -14,11 +14,11 @@
  */
 
 #include "PreparedOps.h"
-#include "UnackedRpcResults.h"
 #include "LeaseCommon.h"
 #include "MasterClient.h"
 #include "MasterService.h"
 #include "ObjectManager.h"
+#include "UnackedRpcResults.h"
 
 namespace RAMCloud {
 
@@ -31,15 +31,12 @@ namespace RAMCloud {
  * \param type
  *      Type of the staged operation.
  * \param clientId
- *      leaseId given for this linearizable RPC.
+ *      leaseId given for this linearizable RPC.  First half of this
+ *      transaction's unique identifier.
+ * \param clientTxId
+ *      Second half of this transaction's unique identifier.
  * \param rpcId
  *      rpcId given for this linearizable RPC.
- * \param participantCount
- *      Number of objects participating current transaction.
- * \param participants
- *      Pointer to the array of #WireFormat::TxParticipant which contains
- *      all information of objects participating transaction.
- *      Its lifetime must cover the lifetime of this Object.
  * \param tableId
  *      TableId for this object.
  * \param version
@@ -62,17 +59,15 @@ namespace RAMCloud {
  */
 PreparedOp::PreparedOp(WireFormat::TxPrepare::OpType type,
                        uint64_t clientId,
+                       uint64_t clientTxId,
                        uint64_t rpcId,
-                       uint32_t participantCount,
-                       WireFormat::TxParticipant* participants,
                        uint64_t tableId,
                        uint64_t version,
                        uint32_t timestamp,
                        Buffer& keysAndValueBuffer,
                        uint32_t startDataOffset,
                        uint32_t length)
-    : header(type, clientId, rpcId, participantCount)
-    , participants(participants)
+    : header(type, clientId, clientTxId, rpcId)
     , object(tableId, version, timestamp, keysAndValueBuffer,
              startDataOffset, length)
 {
@@ -89,15 +84,12 @@ PreparedOp::PreparedOp(WireFormat::TxPrepare::OpType type,
  * \param type
  *      Type of the staged operation.
  * \param clientId
- *      leaseId given for this linearizable RPC.
+ *      leaseId given for this linearizable RPC.  First half of this
+ *      transaction's unique identifier.
+ * \param clientTxId
+ *      Second half of this transaction's unique identifier.
  * \param rpcId
  *      rpcId given for this linearizable RPC.
- * \param participantCount
- *      Number of objects participating current transaction.
- * \param participants
- *      Pointer to the array of #WireFormat::TxParticipant which contains
- *      all information of objects participating transaction.
- *      Its lifetime must cover the lifetime of this Object.
  * \param key
  *      Primary key for this object
  * \param value
@@ -120,9 +112,8 @@ PreparedOp::PreparedOp(WireFormat::TxPrepare::OpType type,
  */
 PreparedOp::PreparedOp(WireFormat::TxPrepare::OpType type,
                        uint64_t clientId,
+                       uint64_t clientTxId,
                        uint64_t rpcId,
-                       uint32_t participantCount,
-                       WireFormat::TxParticipant* participants,
                        Key& key,
                        const void* value,
                        uint32_t valueLength,
@@ -130,8 +121,7 @@ PreparedOp::PreparedOp(WireFormat::TxPrepare::OpType type,
                        uint32_t timestamp,
                        Buffer& buffer,
                        uint32_t *length)
-    : header(type, clientId, rpcId, participantCount)
-    , participants(participants)
+    : header(type, clientId, clientTxId, rpcId)
     , object(key, value, valueLength, version, timestamp, buffer, length)
 {
 }
@@ -156,17 +146,8 @@ PreparedOp::PreparedOp(WireFormat::TxPrepare::OpType type,
  */
 PreparedOp::PreparedOp(Buffer& buffer, uint32_t offset, uint32_t length)
     : header(*buffer.getOffset<Header>(offset))
-    , participants(NULL)
-    , object(buffer,
-             offset + sizeof32(header) +
-               sizeof32(WireFormat::TxParticipant) * header.participantCount,
-             length - sizeof32(header) -
-               sizeof32(WireFormat::TxParticipant) * header.participantCount)
+    , object(buffer, offset + sizeof32(header), length - sizeof32(header))
 {
-    //Fill in participants from buffer data.
-    participants = (WireFormat::TxParticipant*)buffer.getRange(
-            offset + sizeof32(header),
-            sizeof32(WireFormat::TxParticipant) * header.participantCount);
 }
 
 /**
@@ -181,8 +162,6 @@ PreparedOp::assembleForLog(Buffer& buffer)
 {
     header.checksum = computeChecksum();
     buffer.appendCopy(&header, sizeof32(Header));
-    buffer.appendCopy(participants, sizeof32(WireFormat::TxParticipant)
-                                         * header.participantCount);
     object.assembleForLog(buffer);
 }
 
@@ -210,13 +189,19 @@ PreparedOp::computeChecksum()
                downCast<uint32_t>(sizeof(header) -
                sizeof(header.checksum)));
 
-    crc.update(participants,
-               sizeof32(WireFormat::TxParticipant) *
-               header.participantCount);
-
     object.applyChecksum(&crc);
 
     return crc.getResult();
+}
+
+/**
+ * Return the unique identifier for the transaction to which this prepare
+ * operations belongs.
+ */
+TransactionId
+PreparedOp::getTransactionId()
+{
+     return TransactionId(header.clientId, header.clientTxId);
 }
 
 /**
@@ -299,6 +284,107 @@ PreparedOpTombstone::computeChecksum()
                sizeof(header.checksum)));
 
     return crc.getResult();
+}
+
+/**
+ * Construct a ParticipantList from a one that came off the wire.
+ *
+ * \param participants
+ *      Pointer to a contiguous participant list that must stay in scope for the
+ *      life of this object.
+ * \param participantCount
+ *      Number of participants in the list.
+ * \param clientLeaseId
+ *      Id of the client lease associated with this transaction.
+ * \param clientTransactionId
+ *      Client provided identifier for this transaction.
+ */
+ParticipantList::ParticipantList(WireFormat::TxParticipant* participants,
+                                 uint32_t participantCount,
+                                 uint64_t clientLeaseId,
+                                 uint64_t clientTransactionId)
+    : header(clientLeaseId, clientTransactionId, participantCount)
+    , participants(participants)
+{
+}
+
+/**
+ * Construct an ParticipantList using information in the log, which includes the
+ * ParticipantList header. This form of the constructor is typically used for
+ * extracting information out of the log (e.g. perform log cleaning).
+ *
+ * \param buffer
+ *      Buffer referring to a complete ParticipantList in the log. It is the
+ *      caller's responsibility to make sure that the buffer passed in
+ *      actually contains a full ParticipantList. If it does not, then behavior
+ *      is undefined.
+ * \param offset
+ *      Starting offset in the buffer where the object begins.
+ */
+ParticipantList::ParticipantList(Buffer& buffer, uint32_t offset)
+    : header(*buffer.getOffset<Header>(offset))
+    , participants(NULL)
+{
+    participants = (WireFormat::TxParticipant*)buffer.getRange(
+            offset + sizeof32(header),
+            sizeof32(WireFormat::TxParticipant) * header.participantCount);
+}
+
+/**
+ * Append the full ParticipantList to a buffer.
+ *
+ * \param buffer
+ *      The buffer to which to append a serialized version of this
+ *      ParticipantList.
+ */
+void
+ParticipantList::assembleForLog(Buffer& buffer)
+{
+    header.checksum = computeChecksum();
+    buffer.appendExternal(&header, sizeof32(Header));
+    buffer.appendExternal(participants, sizeof32(WireFormat::TxParticipant)
+                                                * header.participantCount);
+}
+
+/**
+ * Compute a checksum on the ParticipantList and determine whether or not it
+ * matches what is stored in the object.
+ *
+ * \return
+ *      True if the checksum looks OK; false otherwise.
+ */
+bool
+ParticipantList::checkIntegrity()
+{
+    return computeChecksum() == header.checksum;
+}
+
+/**
+ * Compute the ParticipantList's checksum and return it.
+ */
+uint32_t
+ParticipantList::computeChecksum()
+{
+    Crc32C crc;
+    // first compute the checksum on the header excluding the checksum field
+    crc.update(this,
+               downCast<uint32_t>(sizeof(header) -
+               sizeof(header.checksum)));
+    // compute the checksum of the list itself
+    crc.update(participants,
+           sizeof32(WireFormat::TxParticipant) *
+           header.participantCount);
+
+    return crc.getResult();
+}
+
+/**
+ * Return the unique identifier for this transaction and participant list.
+ */
+TransactionId
+ParticipantList::getTransactionId()
+{
+    return TransactionId(header.clientLeaseId, header.clientTransactionId);
 }
 
 /**
@@ -455,19 +541,46 @@ PreparedOps::PreparedItem::handleTimerEvent()
 {
     Buffer opBuffer;
     Log::Reference opRef(newOpPtr);
-    context->masterService->objectManager.getLog()->getEntry(opRef, opBuffer);
+    context->getMasterService()->objectManager.getLog()->getEntry(
+            opRef, opBuffer);
     PreparedOp op(opBuffer, 0, opBuffer.size());
-
-    TEST_LOG("TxHintFailed RPC is sent to owner of tableId %lu and "
-             "keyHash %lu.", op.participants[0].tableId,
-             op.participants[0].keyHash);
 
     //TODO(seojin): RAM-767. op.participants can be stale while log cleaning.
     //              It is possible to cause invalid memory access.
-    assert(op.header.participantCount >= 1);
-    MasterClient::txHintFailed(context, op.participants[0].tableId,
-            op.participants[0].keyHash, op.header.clientId,
-            op.header.participantCount, op.participants);
+
+    TransactionId txId = op.getTransactionId();
+
+    UnackedRpcHandle participantListLocator(
+            &context->getMasterService()->unackedRpcResults,
+            {txId.clientLeaseId, 0, 0},
+            txId.clientTransactionId,
+            0);
+
+    if (participantListLocator.isDuplicate()) {
+        Buffer pListBuf;
+        Log::Reference pListRef(participantListLocator.resultLoc());
+        context->getMasterService()->objectManager.getLog()->getEntry(pListRef,
+                                                                      pListBuf);
+        ParticipantList participantList(pListBuf);
+
+        assert(participantList.header.participantCount > 0);
+        TEST_LOG("TxHintFailed RPC is sent to owner of tableId %lu and "
+                "keyHash %lu.", participantList.participants[0].tableId,
+                participantList.participants[0].keyHash);
+
+        MasterClient::txHintFailed(context,
+                participantList.participants[0].tableId,
+                participantList.participants[0].keyHash,
+                participantList.header.clientLeaseId,
+                participantList.header.clientTransactionId,
+                participantList.header.participantCount,
+                participantList.participants);
+    } else {
+        RAMCLOUD_LOG(WARNING,
+                "Unable to find participant list record for TxId (%lu, %lu); "
+                "client transaction recovery could not be requested.",
+                txId.clientLeaseId, txId.clientTransactionId);
+    }
 
     this->start(Cycles::rdtsc() + Cycles::fromMicroseconds(TX_TIMEOUT_US));
 }
@@ -555,4 +668,5 @@ PreparedOps::isDeleted(uint64_t leaseId,
         }
     }
 }
+
 } // namespace RAMCloud

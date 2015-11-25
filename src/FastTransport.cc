@@ -18,7 +18,7 @@
 #include "ShortMacros.h"
 #include "Cycles.h"
 #include "ServiceLocator.h"
-#include "ServiceManager.h"
+#include "WorkerManager.h"
 
 namespace RAMCloud {
 
@@ -79,7 +79,7 @@ FastTransport::getServiceLocator()
 
 // See Transport::getSession().
 Transport::SessionRef
-FastTransport::getSession(const ServiceLocator& serviceLocator,
+FastTransport::getSession(const ServiceLocator* serviceLocator,
         uint32_t timeoutMs)
 {
     Dispatch::Lock lock(context->dispatch);
@@ -1201,7 +1201,7 @@ FastTransport::ServerSession::processReceivedData(ServerChannel* channel,
     case ServerChannel::RECEIVING:
         if (channel->inboundMsg.processReceivedData(received)) {
             channel->state = ServerChannel::PROCESSING;
-            transport->context->serviceManager->handleRpc(channel->currentRpc);
+            transport->context->workerManager->handleRpc(channel->currentRpc);
         }
         break;
     case ServerChannel::PROCESSING:
@@ -1415,11 +1415,11 @@ FastTransport::ClientSession::getRpcInfo()
  *
  */
 void
-FastTransport::ClientSession::init(const ServiceLocator& serviceLocator,
+FastTransport::ClientSession::init(const ServiceLocator* serviceLocator,
                                    uint32_t timeoutMs)
 {
     serverAddress.reset(transport->driver->newAddress(serviceLocator));
-    setServiceLocator(serviceLocator.getOriginalString());
+    setServiceLocator(serviceLocator->getOriginalString());
     if (timeoutMs == 0)
         timeoutMs = DEFAULT_TIMEOUT_MS;
     // Careful with the arithmetic below (timeoutMs is only uint32_t).

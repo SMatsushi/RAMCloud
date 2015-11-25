@@ -37,15 +37,21 @@ TESTS_SRCFILES := \
 		  src/BackupSelectorTest.cc \
 		  src/BackupServiceTest.cc \
 		  src/BackupStorageTest.cc \
+		  src/BasicTransportTest.cc \
 		  src/BitOpsTest.cc \
 		  src/BoostIntrusiveTest.cc \
 		  src/BufferTest.cc \
 		  src/CacheTraceTest.cc \
 		  src/CleanableSegmentManagerTest.cc \
 		  src/ClientExceptionTest.cc \
-		  src/ClientLeaseTest.cc \
+		  src/ClientLeaseAgentTest.cc \
+		  src/ClientLeaseAuthorityTest.cc \
+		  src/ClientLeaseValidatorTest.cc \
+		  src/ClientTransactionManagerTest.cc \
 		  src/ClientTransactionTaskTest.cc \
+		  src/ClusterClockTest.cc \
 		  src/ClusterMetricsTest.cc \
+		  src/ClusterTimeTest.cc \
 		  src/CRamCloudTest.cc \
 		  src/CommonTest.cc \
 		  src/ContextTest.cc \
@@ -74,7 +80,6 @@ TESTS_SRCFILES := \
 		  src/InMemoryStorageTest.cc \
 		  src/IpAddressTest.cc \
 		  src/KeyTest.cc \
-		  src/LeaseManagerTest.cc \
 		  src/LinearizableObjectRpcWrapperTest.cc \
 		  src/LockTableTest.cc \
 		  src/LogCabinStorageTest.cc \
@@ -143,7 +148,6 @@ TESTS_SRCFILES := \
 		  src/ServerTest.cc \
 		  src/ServerTrackerTest.cc \
 		  src/ServiceLocatorTest.cc \
-		  src/ServiceManagerTest.cc \
 		  src/ServiceMaskTest.cc \
 		  src/ServiceTest.cc \
 		  src/SessionAlarmTest.cc \
@@ -179,6 +183,7 @@ TESTS_SRCFILES := \
 		  src/WallTimeTest.cc \
 		  src/WindowTest.cc \
 		  src/WireFormatTest.cc \
+		  src/WorkerManagerTest.cc \
 		  src/WorkerSessionTest.cc \
 		  src/WorkerTimerTest.cc \
 		  src/RamCloudTest.cc \

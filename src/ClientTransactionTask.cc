@@ -13,7 +13,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "ClientLease.h"
+#include "ClientLeaseAgent.h"
+#include "ClientTransactionManager.h"
 #include "ClientTransactionTask.h"
 #include "Context.h"
 #include "ObjectFinder.h"
@@ -42,10 +43,7 @@ ClientTransactionTask::ClientTransactionTask(RamCloud* ramcloud)
     , decisionRpcs()
     , commitCache()
     , nextCacheEntry()
-    , poller()
-    , pollerRawMemory()
 {
-    memset(poller, 0, sizeof(Poller));
     RAMCLOUD_TEST_LOG("Constructor called.");
 }
 
@@ -104,7 +102,7 @@ ClientTransactionTask::insertCacheEntry(Key& key, const void* buf,
 {
     CacheKey cacheKey = {key.getTableId(), key.getHash()};
     CommitCacheMap::iterator it = commitCache.insert(
-            std::make_pair(cacheKey, CacheEntry()));
+            CommitCacheMap::value_type(cacheKey, CacheEntry()));
     it->second.objectBuf = new ObjectBuffer();
     Object::appendKeysAndValueToBuffer(
             key, buf, length, it->second.objectBuf, true);
@@ -115,14 +113,10 @@ ClientTransactionTask::insertCacheEntry(Key& key, const void* buf,
  * Make incremental progress toward committing the transaction.  This method
  * is called during the poll loop when this task needs to make progress (i.e.
  * if the transaction is in the process of committing).
- * \return
- *      0 means no progress was made in this call; 1 means we did something
- *      useful.
  */
-int
+void
 ClientTransactionTask::performTask()
 {
-    int foundWork = 0;
     try {
         if (state == INIT) {
             // Build participant list
@@ -131,8 +125,8 @@ ClientTransactionTask::performTask()
             state = PREPARE;
         }
         if (state == PREPARE) {
-            foundWork |= sendPrepareRpc();
-            foundWork |= processPrepareRpcResults();
+            sendPrepareRpc();
+            processPrepareRpcResults();
             if (prepareRpcs.empty() && nextCacheEntry == commitCache.end()) {
                 switch (decision) {
                     case WireFormat::TxDecision::UNDECIDED:
@@ -164,8 +158,8 @@ ClientTransactionTask::performTask()
             }
         }
         if (state == DECISION) {
-            foundWork |= sendDecisionRpc();
-            foundWork |= processDecisionRpcResults();
+            sendDecisionRpc();
+            processDecisionRpcResults();
             if (decisionRpcs.empty() && nextCacheEntry == commitCache.end()) {
                 ramcloud->rpcTracker->rpcFinished(txId);
                 state = DONE;
@@ -174,7 +168,6 @@ ClientTransactionTask::performTask()
     } catch (ClientException& e) {
         // If there are any unexpected problems with the commit protocol, STOP.
         // This shouldn't happen unless there is a bug.
-        foundWork = 1;
         prepareRpcs.clear();
         decisionRpcs.clear();
         switch (state) {
@@ -204,65 +197,6 @@ ClientTransactionTask::performTask()
         ramcloud->rpcTracker->rpcFinished(txId);
         state = DONE;
     }
-    return foundWork;
-}
-
-/**
- * Schedule a ClientTransactionTask to start executing the commit protocol.
- *
- * This method should only be called once per ClientTransactionTask object; it
- * is not safe to call this method more than once on the same object.
- *
- * \param taskPtr
- *      Shared pointer to the ClientTransactionTask to be run.
- */
-void
-ClientTransactionTask::start(std::shared_ptr<ClientTransactionTask>& taskPtr)
-{
-    assert(taskPtr);
-    ClientTransactionTask* task = taskPtr.get();
-    new(task->poller) Poller(task->ramcloud->clientContext->dispatch, taskPtr);
-}
-
-/**
- * Construct a Poller causing a specified ClientTransactionTask to be run.
- *
- * \param dispatch
- *      Dispatch object through which the poller will be invoked.
- * \param taskPtr
- *      ClientTransactionTask to be run.
- */
-ClientTransactionTask::Poller::Poller(Dispatch* dispatch,
-        std::shared_ptr<ClientTransactionTask>& taskPtr)
-    : Dispatch::Poller(dispatch, "ClientTransactionTask::Poller")
-    , running(false)
-    , taskPtr(taskPtr)
-{
-    RAMCLOUD_TEST_LOG("Constructor called.");
-}
-
-/**
- * Drives the execution of the ClientTransactionTask's rules engine.
- */
-int
-ClientTransactionTask::Poller::poll()
-{
-    int foundWork = 0;
-
-    // Make sure the recursive calls don't execute.
-    if (!running) {
-        running = true;
-        ClientTransactionTask* task = taskPtr.get();
-        foundWork |= task->performTask();
-        running = false;
-
-        // Destroy poller (self) if task is complete; must be last action.
-        if (task->isReady()) {
-            assert(task->poller == this);
-            task->poller->~Poller();
-        }
-    }
-    return foundWork;
 }
 
 /**
@@ -274,8 +208,10 @@ ClientTransactionTask::Poller::poll()
 void
 ClientTransactionTask::initTask()
 {
-    lease = ramcloud->clientLease->getLease();
-    txId = ramcloud->rpcTracker->newRpcIdBlock(this, commitCache.size());
+    lease = ramcloud->clientLeaseAgent->getLease();
+    // First RPC id is used to identify the transaction.  One additional RPC
+    // id is needed for each operation in the transation.
+    txId = ramcloud->rpcTracker->newRpcIdBlock(this, commitCache.size() + 1);
 
     nextCacheEntry = commitCache.begin();
     uint64_t i = 0;
@@ -283,7 +219,7 @@ ClientTransactionTask::initTask()
         const CacheKey* key = &nextCacheEntry->first;
         CacheEntry* entry = &nextCacheEntry->second;
 
-        entry->rpcId = txId + i++;
+        entry->rpcId = txId + (++i);
         participantList.emplaceAppend<WireFormat::TxParticipant>(
                 key->tableId,
                 static_cast<uint64_t>(key->keyHash),
@@ -297,15 +233,10 @@ ClientTransactionTask::initTask()
 /**
  * Process any decision rpcs that have completed.  Used in performTask.
  * Factored out mostly for clarity and ease of testing.
- * \return
- *      0 means the method did some useful work; 0 means there was no
- *      work to do.
  */
-int
+void
 ClientTransactionTask::processDecisionRpcResults()
 {
-    int foundWork = 0;
-
     // Process outstanding RPCs.
     std::list<DecisionRpc>::iterator it = decisionRpcs.begin();
     for (; it != decisionRpcs.end(); it++) {
@@ -314,7 +245,6 @@ ClientTransactionTask::processDecisionRpcResults()
         if (!rpc->isReady()) {
             continue;
         }
-        foundWork = 1;
 
         try {
             rpc->wait();
@@ -335,21 +265,15 @@ ClientTransactionTask::processDecisionRpcResults()
         // Destroy object.
         it = decisionRpcs.erase(it);
     }
-    return foundWork;
 }
 
 /**
  * Process any prepare rpcs that have completed.  Used in performTask.  Factored
  * out mostly for clarity and ease of testing.
- * \return
- *      0 means the method did some useful work; 0 means there was no
- *      work to do.
  */
-int
+void
 ClientTransactionTask::processPrepareRpcResults()
 {
-    int foundWork = 0;
-
     // Process outstanding RPCs.
     std::list<PrepareRpc>::iterator it = prepareRpcs.begin();
     for (; it != prepareRpcs.end(); it++) {
@@ -358,7 +282,6 @@ ClientTransactionTask::processPrepareRpcResults()
         if (!rpc->isReady()) {
             continue;
         }
-        foundWork = 1;
 
         try {
             WireFormat::TxPrepare::Vote newVote = rpc->wait();
@@ -409,21 +332,16 @@ ClientTransactionTask::processPrepareRpcResults()
         // Destroy object.
         it = prepareRpcs.erase(it);
     }
-    return foundWork;
 }
 
 /**
  * Send out a batch of un-sent decision notifications as a single DecisionRpc
  * if not all masters have been notified.  Used in performTask.  Factored out
  * mostly for clarity and ease of testing.
- * \return
- *      0 means the method did some useful work; 0 means there was no
- *      work to do.
  */
-int
+void
 ClientTransactionTask::sendDecisionRpc()
 {
-    int foundWork = 0;
     DecisionRpc* nextRpc = NULL;
     Transport::SessionRef rpcSession;
     for (; nextCacheEntry != commitCache.end(); nextCacheEntry++) {
@@ -438,7 +356,6 @@ ClientTransactionTask::sendDecisionRpc()
         if (entry->state == CacheEntry::DECIDE) {
             continue;
         }
-        foundWork = 1;
 
         // Batch is done naively assuming that tables are partitioned across
         // servers into contiguous key-hash ranges (tablets).  The commit cache
@@ -466,21 +383,16 @@ ClientTransactionTask::sendDecisionRpc()
     if (nextRpc) {
         nextRpc->send();
     }
-    return foundWork;
 }
 
 /**
  * Send out a batch of un-sent prepare requests in a single PrepareRpc if there
  * are remaining un-prepared transaction ops.  Used in performTask.  Factored
  * out mostly for clarity and ease of testing.
- * \return
- *      0 means the method did some useful work; 0 means there was no
- *      work to do.
  */
-int
+void
 ClientTransactionTask::sendPrepareRpc()
 {
-    int foundWork = 0;
     PrepareRpc* nextRpc = NULL;
     Transport::SessionRef rpcSession;
     for (; nextCacheEntry != commitCache.end(); nextCacheEntry++) {
@@ -495,7 +407,6 @@ ClientTransactionTask::sendPrepareRpc()
         if (entry->state == CacheEntry::PREPARE) {
             continue;
         }
-        foundWork = 1;
 
         // Batch is done naively assuming that tables are partitioned across
         // servers into contiguous key-hash ranges (tablets).  The commit cache
@@ -523,19 +434,15 @@ ClientTransactionTask::sendPrepareRpc()
     if (nextRpc) {
         nextRpc->send();
     }
-    return foundWork;
 }
 
 // See RpcTracker::TrackedRpc for documentation.
 void ClientTransactionTask::tryFinish()
 {
     // Making forward progress requires the follow:
-    //  (1) Calling performTask
+    //  (1) Calling performTask (by calling poll on the manager)
     //  (2) Allowing the transport to run by calling poll
-    // This method would only be called if this task is active.  Since active
-    // tasks are driven by their ClientTransactionTask::Poller (i.e. the poller
-    // calls performTask if the tasks is active) and the poller runs in the poll
-    // loop, it is sufficient to simply call poll.
+    ramcloud->transactionManager->poll();
     ramcloud->poll();
 }
 
@@ -717,6 +624,7 @@ ClientTransactionTask::PrepareRpc::PrepareRpc(RamCloud* ramcloud,
     , reqHdr(allocHeader<WireFormat::TxPrepare>())
 {
     reqHdr->lease = task->lease;
+    reqHdr->clientTxId = task->txId;
     reqHdr->ackId = ramcloud->rpcTracker->ackId();
     reqHdr->participantCount = task->participantCount;
     reqHdr->opCount = 0;

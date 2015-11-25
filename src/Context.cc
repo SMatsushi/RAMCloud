@@ -1,5 +1,5 @@
 /* Copyright (c) 2011 Facebook
- * Copyright (c) 2011-2014 Stanford University
+ * Copyright (c) 2011-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -14,20 +14,21 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include "CacheTrace.h"
 #include "Context.h"
+#include "Cycles.h"
 #include "CoordinatorServerList.h"
 #include "CoordinatorSession.h"
 #include "Dispatch.h"
+#include "DispatchExec.h"
 #include "ObjectFinder.h"
-#include "ServiceManager.h"
+#include "PortAlarm.h"
 #include "ShortMacros.h"
 #include "SessionAlarm.h"
-#include "PortAlarm.h"
 #include "TableManager.h"
 #include "TimeTrace.h"
-#include "CacheTrace.h"
 #include "TransportManager.h"
-#include "DispatchExec.h"
+#include "WorkerManager.h"
 
 namespace RAMCloud {
 
@@ -70,7 +71,6 @@ Context::Context(bool hasDedicatedDispatchThread)
     , dispatch(NULL)
     , mockContextMember2(NULL)
     , transportManager(NULL)
-    , serviceManager(NULL)
     , dispatchExec(NULL)
     , sessionAlarmTimer(NULL)
     , portAlarmTimer(NULL)
@@ -78,16 +78,15 @@ Context::Context(bool hasDedicatedDispatchThread)
     , timeTrace(NULL)
     , cacheTrace(NULL)
     , objectFinder(NULL)
+    , workerManager(NULL)
     , externalStorage(NULL)
-    , masterService(NULL)
-    , backupService(NULL)
-    , coordinatorService(NULL)
     , serverList(NULL)
     , coordinatorServerList(NULL)
     , tableManager(NULL)
     , recoveryManager(NULL)
 {
     try {
+        Cycles::init();
 #if TESTING
         mockContextMember1 = new MockContextMember(1);
 #endif
@@ -99,7 +98,6 @@ Context::Context(bool hasDedicatedDispatchThread)
         mockContextMember2 = new MockContextMember(2);
 #endif
         transportManager = new TransportManager(this);
-        serviceManager = new ServiceManager(this);
         dispatchExec = new DispatchExec(dispatch);
         sessionAlarmTimer = new SessionAlarmTimer(this);
         portAlarmTimer = new PortAlarmTimer(this);
@@ -109,6 +107,10 @@ Context::Context(bool hasDedicatedDispatchThread)
         // portAlarmTimer = new PortAlarmTimer(this);
 
         coordinatorSession = new CoordinatorSession(this);
+
+        for (int i = 0; i < WireFormat::INVALID_SERVICE; i++) {
+            services[i] = NULL;
+        }
     } catch (...) {
         destroy();
         throw;
@@ -133,6 +135,7 @@ Context::destroy()
 {
     // The pointers are set to NULL here after they're deleted to make it
     // easier to catch bugs in which outer members try to access inner members.
+    // Note: the order of deletion matters!
 
     // Force ObjectManager to drop all of its cached sessions; otherwise
     // they won't get destroyed until after their transports have been deleted.
@@ -144,8 +147,8 @@ Context::destroy()
     delete coordinatorSession;
     coordinatorSession = NULL;
 
-    delete serviceManager;
-    serviceManager = NULL;
+    delete workerManager;
+    workerManager = NULL;
 
     delete transportManager;
     transportManager = NULL;

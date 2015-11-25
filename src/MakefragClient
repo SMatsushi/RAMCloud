@@ -27,11 +27,13 @@ endif
 CLIENT_SRCFILES := \
 		   src/AbstractServerList.cc \
 		   src/ArpCache.cc \
+		   src/BasicTransport.cc \
 		   src/Buffer.cc \
 		   src/CRamCloud.cc \
 		   src/CacheTrace.cc \
 		   src/ClientException.cc \
-		   src/ClientLease.cc \
+		   src/ClientLeaseAgent.cc \
+		   src/ClientTransactionManager.cc \
 		   src/ClientTransactionTask.cc \
 		   src/ClusterMetrics.cc \
 		   src/CodeLocation.cc \
@@ -94,7 +96,6 @@ CLIENT_SRCFILES := \
 		   src/ServerRpcPool.cc \
 		   src/Service.cc \
 		   src/ServiceLocator.cc \
-		   src/ServiceManager.cc \
 		   src/SessionAlarm.cc \
 		   src/SpinLock.cc \
 		   src/Status.cc \
@@ -112,6 +113,7 @@ CLIENT_SRCFILES := \
 		   src/UdpDriver.cc \
 		   src/Util.cc \
 		   src/WireFormat.cc \
+		   src/WorkerManager.cc \
 		   src/WorkerSession.cc \
 		   src/WorkerTimer.cc \
 		   src/ZooStorage.cc \

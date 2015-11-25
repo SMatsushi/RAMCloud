@@ -88,13 +88,13 @@
 #include "Transport.h"
 #include "InfRcTransport.h"
 #include "IpAddress.h"
-#include "ServiceLocator.h"
-#include "ServiceManager.h"
-#include "ShortMacros.h"
 #include "PerfCounter.h"
 #include "PerfStats.h"
+#include "ServiceLocator.h"
+#include "ShortMacros.h"
 #include "TimeTrace.h"
 #include "Util.h"
+#include "WorkerManager.h"
 
 #define check_error_null(x, s)                              \
     do {                                                    \
@@ -218,7 +218,7 @@ InfRcTransport::InfRcTransport(Context* context,
 
     // If this is a server, create a server setup socket and bind it.
     if (sl != NULL) {
-        IpAddress address(*sl);
+        IpAddress address(sl);
 
         serverSetupSocket = socket(PF_INET, SOCK_DGRAM, 0);
         if (serverSetupSocket == -1) {
@@ -358,14 +358,14 @@ InfRcTransport::setNonBlocking(int fd)
  *      There was a problem that prevented us from creating the session.
  */
 InfRcTransport::InfRcSession::InfRcSession(
-    InfRcTransport *transport, const ServiceLocator& sl, uint32_t timeoutMs)
+    InfRcTransport *transport, const ServiceLocator* sl, uint32_t timeoutMs)
     : transport(transport)
     , serverAddress()
     , qp(NULL)
     , sessionAlarm(transport->context->sessionAlarmTimer, this,
             (timeoutMs != 0) ? timeoutMs : DEFAULT_TIMEOUT_MS)
 {
-    setServiceLocator(sl.getOriginalString());
+    setServiceLocator(sl->getOriginalString());
     IpAddress address(sl);
     serverAddress = reinterpret_cast<struct sockaddr_in*>(
             &address.address)->sin_addr;
@@ -1407,7 +1407,7 @@ InfRcTransport::Poller::poll()
             port->portAlarm.requestArrived(); // Restarts the port watchdog
             interval.stop();
             r->rpcServiceTime.start();
-            t->context->serviceManager->handleRpc(r);
+            t->context->workerManager->handleRpc(r);
             ++metrics->transport.receive.messageCount;
             ++metrics->transport.receive.packetCount;
             metrics->transport.receive.iovecCount +=

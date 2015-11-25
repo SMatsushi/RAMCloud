@@ -57,7 +57,7 @@ TxRecoveryManager::handleTimerEvent()
         }
     }
 
-    // Reschedule if there is still recoveries in progress.
+    // Reschedule if there are still recoveries in progress.
     if (recoveries.size() > 0) {
         this->start(0);
     }
@@ -83,14 +83,14 @@ TxRecoveryManager::handleTxHintFailed(Buffer* rpcReq)
     uint32_t offset = sizeof32(*reqHdr);
     WireFormat::TxParticipant* participant =
             rpcReq->getOffset<WireFormat::TxParticipant>(offset);
-    if (!context->masterService->tabletManager.getTablet(
+    if (!context->getMasterService()->tabletManager.getTablet(
             participant->tableId, participant->keyHash)) {
         throw UnknownTabletException(HERE);
     }
     uint64_t leaseId = reqHdr->leaseId;
-    uint64_t rpcId = participant->rpcId;
+    uint64_t txId = reqHdr->clientTxId;
     uint32_t participantCount = reqHdr->participantCount;
-    RecoveryId recoveryId = {leaseId, rpcId};
+    RecoveryId recoveryId = {leaseId, txId};
 
     /*** Make sure we did not already receive this request. ***/
     Lock _(lock);
@@ -102,7 +102,7 @@ TxRecoveryManager::handleTxHintFailed(Buffer* rpcReq)
     /*** Schedule a new recovery. ***/
     recoveringIds.insert(recoveryId);
     recoveries.emplace_back(
-            context, leaseId, *rpcReq, participantCount, offset);
+            context, leaseId, txId, *rpcReq, participantCount, offset);
     this->start(0);
 }
 
@@ -120,15 +120,10 @@ bool
 TxRecoveryManager::isTxDecisionRecordNeeded(TxDecisionRecord& record)
 {
     Lock _(lock);
-    if (record.getParticipantCount() < 1) {
-        RAMCLOUD_LOG(ERROR, "TxDecisionRecord missing participant information");
-        return false;
-    }
 
-    WireFormat::TxParticipant participant = record.getParticipant(0);
     uint64_t leaseId = record.getLeaseId();
-    uint64_t rpcId = participant.rpcId;
-    RecoveryId recoveryId = {leaseId, rpcId};
+    uint64_t transactionId = record.getTransactionId();
+    RecoveryId recoveryId = {leaseId, transactionId};
     if (recoveringIds.find(recoveryId) == recoveringIds.end()) {
         // This transaction is still recovering.
         return false;
@@ -150,13 +145,8 @@ TxRecoveryManager::isTxDecisionRecordNeeded(TxDecisionRecord& record)
 bool
 TxRecoveryManager::recoverRecovery(TxDecisionRecord& record)
 {
-    if (expect_false(record.getParticipantCount() < 1)) {
-        RAMCLOUD_LOG(ERROR, "TxDecisionRecord missing participant information");
-        return false;
-    }
-
     RecoveryId recoveryId = {record.getLeaseId(),
-                             record.getParticipant(0).rpcId};
+                             record.getTransactionId()};
 
     /*** Make sure we did not already receive this request. ***/
     Lock _(lock);
@@ -179,7 +169,9 @@ TxRecoveryManager::recoverRecovery(TxDecisionRecord& record)
  * \param context
  *      Overall information about this server.
  * \param leaseId
- *      If of the lease associated with the transaction to be recovered.
+ *      Id of the lease associated with the transaction to be recovered.
+ * \param transactionId
+ *      Id of the recovering transaction.
  * \param participantBuffer
  *      Buffer containing the WireFormat list of the participants that arrived
  *      as a part of a TxHintFailed request that initiated this recovery.  This
@@ -193,11 +185,12 @@ TxRecoveryManager::recoverRecovery(TxDecisionRecord& record)
  *      start.
  */
 TxRecoveryManager::RecoveryTask::RecoveryTask(
-        Context* context, uint64_t leaseId,
+        Context* context, uint64_t leaseId, uint64_t transactionId,
         Buffer& participantBuffer, uint32_t participantCount,
         uint32_t offset)
     : context(context)
     , leaseId(leaseId)
+    , transactionId(transactionId)
     , state(State::REQUEST_ABORT)
     , decision(WireFormat::TxDecision::UNDECIDED)
     , participants()
@@ -214,8 +207,8 @@ TxRecoveryManager::RecoveryTask::RecoveryTask(
         uint64_t keyHash = participant->keyHash;
         uint64_t rpcId = participant->rpcId;
         participants.emplace_back(tableId,
-                                     keyHash,
-                                     rpcId);
+                                  keyHash,
+                                  rpcId);
         offset += sizeof32(*participant);
     }
     nextParticipantEntry = participants.begin();
@@ -237,6 +230,7 @@ TxRecoveryManager::RecoveryTask::RecoveryTask(
         Context* context, TxDecisionRecord& record)
     : context(context)
     , leaseId(record.getLeaseId())
+    , transactionId(record.getTransactionId())
     , state(State::DECIDE)
     , decision(record.getDecision())
     , participants()
@@ -252,8 +246,8 @@ TxRecoveryManager::RecoveryTask::RecoveryTask(
         uint64_t keyHash = participant.keyHash;
         uint64_t rpcId = participant.rpcId;
         participants.emplace_back(tableId,
-                                     keyHash,
-                                     rpcId);
+                                  keyHash,
+                                  rpcId);
     }
     nextParticipantEntry = participants.begin();
 }
@@ -265,8 +259,15 @@ void
 TxRecoveryManager::RecoveryTask::performTask()
 {
     if (state == State::REQUEST_ABORT) {
-        processRequestAbortRpcs();
         sendRequestAbortRpc();
+        try {
+            processRequestAbortRpcResults();
+        } catch (StaleRpcException& e) {
+            // Finish early since the recovery process is not actually needed.
+            requestAbortRpcs.clear();   // cleanup early to avoid extra work.
+            state = State::DONE;
+            return;
+        }
         if (nextParticipantEntry == participants.end()
             && requestAbortRpcs.empty())
         {
@@ -282,6 +283,7 @@ TxRecoveryManager::RecoveryTask::performTask()
                     participant->tableId,
                     participant->keyHash,
                     leaseId,
+                    transactionId,
                     decision,
                     WallTime::secondsTimestamp());
             for (; it != participants.end(); it++) {
@@ -291,16 +293,18 @@ TxRecoveryManager::RecoveryTask::performTask()
                         participant->keyHash,
                         participant->rpcId);
             }
-            context->masterService->objectManager.writeTxDecisionRecord(record);
-            context->masterService->objectManager.syncChanges();
+            context->getMasterService()->objectManager.writeTxDecisionRecord(
+                    record);
+            context->getMasterService()->objectManager.syncChanges();
 
             // Change state to cause next phase to execute.
             state = State::DECIDE;
             nextParticipantEntry = participants.begin();
         }
-    } else if (state == State::DECIDE) {
-        processDecisionRpcs();
+    }
+    if (state == State::DECIDE) {
         sendDecisionRpc();
+        processDecisionRpcResults();
         if (nextParticipantEntry == participants.end()
             && requestAbortRpcs.empty())
         {
@@ -308,17 +312,6 @@ TxRecoveryManager::RecoveryTask::performTask()
             // Change state to cause next phase to execute.
             state = State::DONE;
         }
-    }
-}
-
-/**
- * Polls waiting for the recovery task to complete.
- */
-void
-TxRecoveryManager::RecoveryTask::wait()
-{
-    while (!isReady()) {
-        performTask();
     }
 }
 
@@ -503,7 +496,7 @@ TxRecoveryManager::RecoveryTask::DecisionRpc::wait()
  * of testing.
  */
 void
-TxRecoveryManager::RecoveryTask::processDecisionRpcs()
+TxRecoveryManager::RecoveryTask::processDecisionRpcResults()
 {
     // Process outstanding RPCs.
     std::list<DecisionRpc>::iterator it = decisionRpcs.begin();
@@ -650,9 +643,13 @@ TxRecoveryManager::RecoveryTask::RequestAbortRpc::wait()
 /**
  * Process any request abort rpcs that have completed.  Factored out mostly for
  * ease of testing.
+ *
+ * \throw StaleRpcException
+ *      At least one of the requested aborts could not complete because the
+ *      client has already completed the transaction protocol.
  */
 void
-TxRecoveryManager::RecoveryTask::processRequestAbortRpcs()
+TxRecoveryManager::RecoveryTask::processRequestAbortRpcResults()
 {
     // Process outstanding RPCs.
     std::list<RequestAbortRpc>::iterator it = requestAbortRpcs.begin();
@@ -664,7 +661,7 @@ TxRecoveryManager::RecoveryTask::processRequestAbortRpcs()
         }
 
         try {
-            if (rpc->wait() == WireFormat::TxPrepare::PREPARED) {
+            if (rpc->wait() == WireFormat::TxPrepare::ABORT) {
                 decision = WireFormat::TxDecision::ABORT;
             }
         } catch (UnknownTabletException& e) {
@@ -729,7 +726,8 @@ string
 TxRecoveryManager::RecoveryTask::toString()
 {
     string s;
-    s.append(format("RecoveryTask :: lease{%lu}", leaseId));
+    s.append(format("RecoveryTask :: lease{%lu} transaction{%lu}",
+                    leaseId, transactionId));
     switch (state) {
         case State::REQUEST_ABORT:
             s.append(" state{REQUEST_ABORT}");

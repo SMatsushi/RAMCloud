@@ -164,7 +164,7 @@ struct ClientLease {
                                 /// become invalid.
     uint64_t timestamp;         /// Cluster time when this lease information was
                                 /// provided by the coordinator.
-};
+} __attribute__((packed));
 
 /**
  * Each RPC request starts with this structure.
@@ -671,11 +671,11 @@ struct GetLeaseInfo {
     static const ServiceType service = COORDINATOR_SERVICE;
     struct Request {
         RequestCommon common;
-        uint64_t leaseId;
+        uint64_t leaseId;       // Id of lease whose info should be returned.
     } __attribute__((packed));
     struct Response {
         ResponseCommon common;
-        ClientLease lease;
+        ClientLease lease;      // Requested lease information.
     } __attribute__((packed));
 };
 
@@ -853,6 +853,9 @@ struct Increment {
     struct Request {
         RequestCommon common;
         uint64_t tableId;
+        ClientLease lease;
+        uint64_t rpcId;
+        uint64_t ackId;
         uint16_t keyLength;           // Length of the key in bytes.
                                       // The actual bytes of the key follow
                                       // immediately after this header.
@@ -1391,6 +1394,9 @@ struct Remove {
     struct Request {
         RequestCommon common;
         uint64_t tableId;
+        ClientLease lease;
+        uint64_t rpcId;
+        uint64_t ackId;
         uint16_t keyLength;           // Length of the key in bytes.
                                       // The actual key follows
                                       // immediately after this header.
@@ -1715,6 +1721,12 @@ struct TxPrepare {
         ClientLease lease;          // Lease information for the requested
                                     // transaction.  To ensure prepare requests
                                     // are linearizable.
+        uint64_t clientTxId;        // Client provided transaction identifier
+                                    // which uniquely identifies transaction
+                                    // among transactions from the same client.
+                                    // Paired with the lease identifier, the
+                                    // clientTxId provides a system-wide unique
+                                    // identifier for this transaction.
         uint64_t ackId;             // Id of the largest RPC id whose metadata
                                     // can be garbage-collected.  Used for
                                     // linearizability.
@@ -1827,6 +1839,12 @@ struct TxHintFailed {
         RequestCommon common;
         uint64_t leaseId;           // Id of the client lease associated with
                                     // this transaction.
+        uint64_t clientTxId;        // Client provided transaction identifier
+                                    // which uniquely identifies transaction
+                                    // among transactions from the same client.
+                                    // Paired with the lease identifier, the
+                                    // clientTxId provides a system-wide unique
+                                    // identifier for this transaction.
         uint32_t participantCount;  // Number of local objects participating TX
                                     // for this server.
         // List of local Participants

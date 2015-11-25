@@ -86,6 +86,18 @@ class AbstractLog {
         Reference reference;
     };
 
+    /**
+     * Interface for log reference freer.
+     * freeLogEntry() should call AbstractLog::free() appropriately.
+     * Actual implementer can add additional jobs or make this no-op for test.
+     * Primarily used for garbage collection of RpcResult log entries.
+     */
+    class ReferenceFreer {
+      public:
+        virtual ~ReferenceFreer() {}
+        virtual void freeLogEntry(Reference ref) = 0;
+    };
+
     typedef std::lock_guard<SpinLock> Lock;
 
     AbstractLog(LogEntryHandlers* entryHandlers,
@@ -167,7 +179,7 @@ class AbstractLog {
      * that is not yet part of the log from SegmentManager. This allows the
      * latter class to ignore any segment ordering constraints until it is
      * time to merge with the log proper.
-     * 
+     *
      * \param mustNotFail
      *      If true, this method must return a valid LogSegment pointer. It may
      *      block indefinitely if necessary. If false, the method must return
@@ -254,6 +266,28 @@ class AbstractLog {
               totalBytesAppended(0),
               totalMetadataBytesAppended(0)
         {
+        }
+
+        /**
+         * Add all of the metrics this instance to the fields in \a other.
+         * This method is kind of inverted (merges into the arg's fields) due to
+         * weird issues with accessing protected fields through member pointers.
+         */
+        void mergeInto(AbstractLog* other)
+        {
+            other->metrics.totalAppendCalls += totalAppendCalls;
+            other->metrics.totalAppendTicks += totalAppendTicks;
+            other->metrics.totalNoSpaceTicks += totalNoSpaceTicks;
+            other->metrics.totalBytesAppended += totalBytesAppended;
+            other->metrics.totalMetadataBytesAppended +=
+                totalMetadataBytesAppended;
+        }
+
+        /// Reset the metrics for the log to the initial/empty state.
+        void reset()
+        {
+            this->~Metrics();
+            new(this) Metrics{};
         }
 
         /// Total number of times any of the public append() methods have been

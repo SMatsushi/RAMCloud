@@ -1,4 +1,4 @@
-/* Copyright (c) 2012 Stanford University
+/* Copyright (c) 2012-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -193,8 +193,7 @@ TEST_F(AbstractServerListTest, getSession_verifyServerId) {
     BindTransport transport(&context);
     TransportManager::MockRegistrar mockRegistrar(&context, transport);
     PingService pingService(&context);
-    transport.addService(pingService, "mock:host=ping",
-                WireFormat::PING_SERVICE);
+    transport.registerServer(&context, "mock:host=ping");
     ServerId id1 = sl.add("mock:host=ping", ServerStatus::UP,
             {WireFormat::MASTER_SERVICE, WireFormat::PING_SERVICE});
     pingService.setServerId(id1);
@@ -207,6 +206,21 @@ TEST_F(AbstractServerListTest, getSession_verifyServerId) {
     EXPECT_EQ("getSession: server for locator mock:host=ping has incorrect "
             "id (expected 1.0, got 0.0); discarding session",
             TestLog::get());
+}
+TEST_F(AbstractServerListTest, getSession_retryIdVerification) {
+    AbstractServerList::skipServerIdCheck = false;
+    BindTransport transport(&context);
+    TransportManager::MockRegistrar mockRegistrar(&context, transport);
+    PingService pingService(&context);
+    pingService.returnUnknownId = true;
+    transport.registerServer(&context, "mock:host=ping");
+    ServerId id1 = sl.add("mock:host=ping", ServerStatus::UP,
+            {WireFormat::MASTER_SERVICE, WireFormat::PING_SERVICE});
+    pingService.setServerId(id1);
+    TestLog::Enable _;
+    EXPECT_EQ("mock:host=ping", sl.getSession(id1)->getServiceLocator());
+    EXPECT_EQ("getSession: retrying server id check for 0.0: server "
+            "not yet enlisted", TestLog::get());
 }
 
 TEST_F(AbstractServerListTest, flushSession) {

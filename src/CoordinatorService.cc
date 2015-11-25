@@ -33,8 +33,8 @@ bool CoordinatorService::forceSynchronousInit = false;
  * Construct a CoordinatorService.
  *
  * \param context
- *      Overall information about the RAMCloud server. A pointer to this
- *      object will be stored at context->coordinatorService.
+ *      Overall information about the RAMCloud server.  The new service
+ *      will be registered in this context.
  * \param deadServerTimeout
  *      Servers are presumed dead if they cannot respond to a ping request
  *      in this many milliseconds.
@@ -45,25 +45,23 @@ bool CoordinatorService::forceSynchronousInit = false;
 CoordinatorService::CoordinatorService(Context* context,
                                        uint32_t deadServerTimeout,
                                        bool unitTesting,
-                                       uint32_t maxThreads,
                                        bool neverKill)
     : context(context)
     , serverList(context->coordinatorServerList)
     , deadServerTimeout(deadServerTimeout)
     , updateManager(context->externalStorage)
     , tableManager(context, &updateManager)
-    , leaseManager(context)
+    , leaseAuthority(context)
     , runtimeOptions()
     , recoveryManager(context, tableManager, &runtimeOptions)
-    , threadLimit(maxThreads)
     , forceServerDownForTesting(false)
     , neverKill(neverKill)
     , initFinished(false)
     , backupConfig()
     , masterConfig()
 {
+    context->services[WireFormat::COORDINATOR_SERVICE] = this;
     context->recoveryManager = &recoveryManager;
-    context->coordinatorService = this;
 
     // Invoke the rest of initialization in a separate thread (except during
     // unit tests). This is needed because some of the recovery operations
@@ -81,6 +79,7 @@ CoordinatorService::CoordinatorService(Context* context,
 
 CoordinatorService::~CoordinatorService()
 {
+    context->services[WireFormat::COORDINATOR_SERVICE] = NULL;
     recoveryManager.halt();
 }
 
@@ -102,7 +101,7 @@ CoordinatorService::init(CoordinatorService* service,
     // exceptions.
     try {
         // Recover state (and incomplete operations) from external storage.
-        service->leaseManager.recover();
+        service->leaseAuthority.recover();
         uint64_t lastCompletedUpdate = service->updateManager.init();
         service->serverList->recover(lastCompletedUpdate);
         service->tableManager.recover(lastCompletedUpdate);
@@ -116,7 +115,7 @@ CoordinatorService::init(CoordinatorService* service,
         service->serverList->startUpdater();
 
         if (!unitTesting) {
-            service->leaseManager.startUpdaters();
+            service->leaseAuthority.startUpdaters();
             // When the recovery manager starts up below, it will resume
             // recovery for crashed nodes; it isn't safe to do that until
             // after the server list and table manager have recovered (e.g.
@@ -400,7 +399,7 @@ CoordinatorService::getLeaseInfo(
     WireFormat::GetLeaseInfo::Response* respHdr,
     Rpc* rpc)
 {
-    respHdr->lease = leaseManager.getLeaseInfo(reqHdr->leaseId);
+    respHdr->lease = leaseAuthority.getLeaseInfo(reqHdr->leaseId);
 }
 
 /**
@@ -602,7 +601,7 @@ CoordinatorService::renewLease(
     WireFormat::RenewLease::Response* respHdr,
     Rpc* rpc)
 {
-    respHdr->lease = leaseManager.renewLease(reqHdr->leaseId);
+    respHdr->lease = leaseAuthority.renewLease(reqHdr->leaseId);
 }
 
 /**

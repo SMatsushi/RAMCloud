@@ -47,7 +47,7 @@ namespace po = boost::program_options;
 
 #include "assert.h"
 #include "btreeRamCloud/Btree.h"
-#include "ClientLease.h"
+#include "ClientLeaseAgent.h"
 #include "CycleCounter.h"
 #include "Cycles.h"
 #include "PerfStats.h"
@@ -506,27 +506,27 @@ struct VirtualClient {
     struct Context {
         explicit Context(VirtualClient* virtualClient)
             : virtualClient(virtualClient)
-            , originalLease(cluster->clientLease)
+            , originalLeaseAgent(cluster->clientLeaseAgent)
             , originalTracker(cluster->rpcTracker)
         {
             // Set context variables.
-            cluster->clientLease = &virtualClient->lease;
+            cluster->clientLeaseAgent = &virtualClient->lease;
             cluster->rpcTracker = &virtualClient->rpcTracker;
         }
 
         ~Context() {
-            cluster->clientLease = originalLease;
+            cluster->clientLeaseAgent = originalLeaseAgent;
             cluster->rpcTracker = originalTracker;
         }
 
         VirtualClient* virtualClient;
-        ClientLease* originalLease;
+        ClientLeaseAgent* originalLeaseAgent;
         RpcTracker* originalTracker;
 
         DISALLOW_COPY_AND_ASSIGN(Context);
     };
 
-    ClientLease lease;
+    ClientLeaseAgent lease;
     RpcTracker rpcTracker;
     DISALLOW_COPY_AND_ASSIGN(VirtualClient);
 };
@@ -1866,9 +1866,20 @@ basic()
         // below accounts for additional overhead per object beyond the
         // key and value.
         uint32_t numObjects = 200000000/(size + keyLength + 20);
+        LOG(NOTICE, "Filling table with %d-byte objects", size);
+        cluster->logMessageAll(NOTICE,
+                "Filling table with %d-byte objects", size);
         fillTable(dataTable, numObjects, keyLength, size);
+
+        LOG(NOTICE, "Starting read test for %d-byte objects", size);
+        cluster->logMessageAll(NOTICE,
+                "Starting read test for %d-byte objects", size);
         readDists[i] = readRandomObjects(dataTable, numObjects, keyLength,
                 100000, 2.0);
+
+        LOG(NOTICE, "Starting write test for %d-byte objects", size);
+        cluster->logMessageAll(NOTICE,
+                "Starting write test for %d-byte objects", size);
         writeDists[i] =  writeRandomObjects(dataTable, numObjects, keyLength,
                 size, 100000, 2.0);
     }
@@ -2353,17 +2364,14 @@ indexLookupCommon(bool doIndexRange, uint32_t samplesPerOp)
     uint64_t firstPkHash = 0;
     char firstSecondaryKey[keyLength];
 
-    int bytesWritten;
     for (uint32_t i = 0, k = 0; i < maxNumObjects; i++) {
         char primaryKey[keyLength];
-        bytesWritten = snprintf(primaryKey, sizeof(primaryKey), "p%0*d",
+        snprintf(primaryKey, sizeof(primaryKey), "p%0*d",
                 keyLength-2, i);
-        assert(bytesWritten == keyLength-1);
 
         char secondaryKey[keyLength];
-        bytesWritten = snprintf(secondaryKey, sizeof(secondaryKey), "b%ds%0*d",
+        snprintf(secondaryKey, sizeof(secondaryKey), "b%ds%0*d",
                 i, keyLength, 0);
-        assert(bytesWritten == keyLength-1);
 
         if (doIndexRange && i == 0) {
             memcpy(firstSecondaryKey, secondaryKey, keyLength);
@@ -3385,6 +3393,7 @@ indexScalabilityCommonLookup(uint8_t numIndexlets, int numObjectsPerIndxlet,
         lookupEnd = Cycles::rdtsc();
 
         // Verify data.
+        #if DEBUG_BUILD
         for (int i =0; i < numRequests; i++) {
             Key pk(lookupTable, primaryKey[i], 30);
             uint32_t lookupOffset;
@@ -3394,6 +3403,7 @@ indexScalabilityCommonLookup(uint8_t numIndexlets, int numObjectsPerIndxlet,
             assert(pk.getHash()==
                     *lookupResp[i].getOffset<uint64_t>(lookupOffset));
         }
+        #endif
 
         uint64_t latency = lookupEnd - lookupStart;
         opCount = opCount + numRequests;
@@ -5761,11 +5771,11 @@ writeThroughputMaster(int numObjects, int size, uint16_t keyLength)
     // throughput while gradually increasing the number of workers.
     printf("#\n");
     printf("# clients   throughput   worker   cleaner  compactor  "
-            "cleaner  dispatch  netOut    netIn\n");
+            "cleaner  dispatch  netOut    netIn   replic    sync\n");
     printf("#           (kops/sec)   cores     cores    free %%    "
-            "free %%   utiliz.   (MB/s)    (MB/s)\n");
+            "free %%   utiliz.   (MB/s)    (MB/s)   eff.     frac\n");
     printf("#------------------------------------------------------"
-            "--------------------------------------------\n");
+            "------------------------------------------------------\n");
     fillTable(dataTable, numObjects, keyLength, size);
     Cycles::sleep(2000000);
     string stats[5];
@@ -5833,11 +5843,16 @@ writeThroughputMaster(int numObjects, int size, uint16_t keyLength)
         double netInRate = static_cast<double>(
                 finishStats.networkInputBytes -
                 startStats.networkInputBytes) / elapsedTime;
+        double repEfficiency = static_cast<double>(finishStats.writeCount -
+                startStats.writeCount)/static_cast<double>(
+                finishStats.replicationRpcs - startStats.replicationRpcs);
+        double syncFraction = static_cast<double>(finishStats.logSyncCycles -
+                startStats.logSyncCycles) / elapsedCycles;
         printf("%5d       %8.2f   %8.3f %8.3f %8.1f  %8.1f  %8.3f "
-                "%8.2f  %8.2f\n",
+                "%8.2f  %8.2f %7.2f  %7.2f\n",
                 numSlaves, rate/1e03, utilization, cleanerUtilization,
                 compactorFreePct, cleanerFreePct, dispatchUtilization,
-                netOutRate/1e06, netInRate/1e06);
+                netOutRate/1e06, netInRate/1e06, repEfficiency, syncFraction);
     }
     sendCommand("done", "done", 1, numClients-1);
 #if 0
@@ -5905,7 +5920,7 @@ writeThroughput()
                             keyLength, key);
                     Util::genRandomString(value, objectSize);
                     cluster->write(dataTable, key, keyLength, value, objectSize,
-                            NULL, NULL, false, false);
+                            NULL, NULL, false);
                     ++objectsWritten;
                 } while (Cycles::rdtsc() < checkTime);
             } else if (strcmp(command, "done") == 0) {
@@ -5919,78 +5934,6 @@ writeThroughput()
             }
         }
     }
-}
-
-// With linearizable RPC, write or overwrite randomly-chosen objects from a
-// large table (so that there will be cache misses on the hash table and the
-// object) and compute a cumulative distribution of write times.
-void
-linearizableWriteDistRandom()
-{
-    int numKeys = 2000000;
-    if (clientIndex != 0)
-        return;
-
-    const uint16_t keyLength = 30;
-
-    char key[keyLength];
-    char value[objectSize];
-
-    // Setup virtual clients.
-    Tub<VirtualClient>* virtualClients = new Tub<VirtualClient>[numVClients];
-    for (int i = 0; i < numVClients; ++i) {
-        virtualClients[i].construct(cluster);
-        VirtualClient::Context _(virtualClients[i].get());
-        makeKey(downCast<int>(generateRandom() % numKeys), keyLength, key);
-        Util::genRandomString(value, objectSize);
-        cluster->write(dataTable, key, keyLength, value, objectSize,
-                       NULL, NULL, false, true);
-    }
-
-    {
-        VirtualClient::Context _(virtualClients[0].get());
-        fillTable(dataTable, numKeys, keyLength, objectSize);
-    }
-
-    // Issue the writes back-to-back, and save the times.
-    std::vector<uint64_t> ticks;
-    ticks.resize(count);
-    for (int i = 0; i < count; i++) {
-        // Pick a virtual client
-        int virtualClientIndex = downCast<int>(generateRandom() % numVClients);
-        VirtualClient::Context _(virtualClients[virtualClientIndex].get());
-
-        // We generate the random number separately to avoid timing potential
-        // cache misses on the client side.
-        makeKey(downCast<int>(generateRandom() % numKeys), keyLength, key);
-        Util::genRandomString(value, objectSize);
-        // Do the benchmark
-        uint64_t start = Cycles::rdtsc();
-        cluster->write(dataTable, key, keyLength, value, objectSize,
-                       NULL, NULL, false, true);
-        ticks[i] = Cycles::rdtsc() - start;
-    }
-
-    // Output the times (several comma-separated values on each line).
-    int valuesInLine = 0;
-    for (int i = 0; i < count; i++) {
-        if (valuesInLine >= 10) {
-            valuesInLine = 0;
-            printf("\n");
-        }
-        if (valuesInLine != 0) {
-            printf(",");
-        }
-        double micros = Cycles::toSeconds(ticks[i])*1.0e06;
-        printf("%.2f", micros);
-        valuesInLine++;
-    }
-    printf("\n");
-
-    for (int i = 0; i < numVClients; ++i) {
-        virtualClients[i].destroy();
-    }
-    delete[] virtualClients;
 }
 
 // This benchmark measures total throughput of a single server (in operations
@@ -6081,142 +6024,6 @@ workloadThroughput()
     }
 }
 
-// This benchmark measures total throughput of a single server (in objects
-// writes per second) under a workload consisting of individual linearizable
-// random object write.
-void
-linearizableWriteThroughput()
-{
-    const uint16_t keyLength = 30;
-    int size = objectSize;
-    if (size < 0)
-        size = 100;
-    const int numObjects = 400000000/objectSize;
-    if (clientIndex == 0) {
-        // This is the master client.
-        printf("# RAMCloud linearizable write throughput of a single\n"
-                "# server with a varying number of clients issuing\n"
-                "# individual reads on randomly chosen %d-byte objects\n"
-                "# with %d-byte keys\n",
-                size, keyLength);
-        printf("# Generated by 'clusterperf.py linearizableWriteThroughput'\n");
-        writeThroughputMaster(numObjects, size, keyLength);
-    } else {
-        // Slaves execute the following code, which creates load by
-        // issuing individual reads.
-        bool running = false;
-
-        uint64_t startTime;
-        int objectsWritten;
-
-        while (true) {
-            char command[20];
-            if (running) {
-                // Write out some statistics for debugging.
-                double totalTime = Cycles::toSeconds(Cycles::rdtsc()
-                        - startTime);
-                double rate = objectsWritten/totalTime;
-                RAMCLOUD_LOG(NOTICE, "Write rate: %.1f kobjects/sec",
-                        rate/1e03);
-            }
-            getCommand(command, sizeof(command), false);
-            if (strcmp(command, "run") == 0) {
-                if (!running) {
-                    setSlaveState("running");
-                    running = true;
-                    RAMCLOUD_LOG(NOTICE,
-                            "Starting linearizableWriteThroughput benchmark");
-                }
-
-                // Perform reads for a second (then check to see
-                // if the experiment is over).
-                startTime = Cycles::rdtsc();
-                objectsWritten = 0;
-                uint64_t checkTime = startTime + Cycles::fromSeconds(1.0);
-                do {
-                    char key[keyLength];
-                    char value[objectSize];
-                    makeKey(downCast<int>(generateRandom() % numObjects),
-                            keyLength, key);
-                    Util::genRandomString(value, objectSize);
-                    cluster->write(dataTable, key, keyLength, value, objectSize,
-                            NULL, NULL, false, true);
-                    ++objectsWritten;
-                } while (Cycles::rdtsc() < checkTime);
-            } else if (strcmp(command, "done") == 0) {
-                setSlaveState("done");
-                RAMCLOUD_LOG(NOTICE,
-                             "Ending linearizableWriteThroughput benchmark");
-                return;
-            } else {
-                RAMCLOUD_LOG(ERROR, "unknown command %s", command);
-                return;
-            }
-        }
-    }
-}
-
-// Random linearizable write times for objects of different sizes
-void
-linearizableRpc()
-{
-    if (clientIndex != 0)
-        return;
-    Buffer input, output;
-#define NUM_SIZES 5
-    int sizes[] = {100, 1000, 10000, 100000, 1000000};
-    TimeDist writeDists[NUM_SIZES];
-    const char* ids[] = {"100", "1K", "10K", "100K", "1M"};
-    uint16_t keyLength = 30;
-    char name[50], description[50];
-
-    // Each iteration through the following loop measures random reads and
-    // writes of a particular object size. Start with the largest object
-    // size and work down to the smallest (this way, each iteration will
-    // replace all of the objects created by the previous iteration).
-    for (int i = NUM_SIZES-1; i >= 0; i--) {
-        int size = sizes[i];
-
-        // Generate roughly 500MB of data of the current size. The "20"
-        // below accounts for additional overhead per object beyond the
-        // key and value.
-        uint32_t numObjects = 200000000/(size + keyLength + 20);
-        fillTable(dataTable, numObjects, keyLength, size);
-        writeDists[i] =  writeRandomObjects(dataTable, numObjects, keyLength,
-                size, 100000, 2.0);
-    }
-
-    // Print out the results (in a different order):
-    for (int i = 0; i < NUM_SIZES; i++) {
-        TimeDist* dist = &writeDists[i];
-        snprintf(description, sizeof(description),
-                "write random %sB object (%uB key)", ids[i], keyLength);
-        snprintf(name, sizeof(name), "basic.write%s", ids[i]);
-        printf("%-20s %s     %s median\n", name, formatTime(dist->p50).c_str(),
-                description);
-        snprintf(name, sizeof(name), "basic.write%s.min", ids[i]);
-        printf("%-20s %s     %s minimum\n", name, formatTime(dist->min).c_str(),
-                description);
-        snprintf(name, sizeof(name), "basic.write%s.9", ids[i]);
-        printf("%-20s %s     %s 90%%\n", name, formatTime(dist->p90).c_str(),
-                description);
-        if (dist->p99 != 0) {
-            snprintf(name, sizeof(name), "basic.write%s.99", ids[i]);
-            printf("%-20s %s     %s 99%%\n", name,
-                    formatTime(dist->p99).c_str(), description);
-        }
-        if (dist->p999 != 0) {
-            snprintf(name, sizeof(name), "basic.write%s.999", ids[i]);
-            printf("%-20s %s     %s 99.9%%\n", name,
-                    formatTime(dist->p999).c_str(), description);
-        }
-        snprintf(name, sizeof(name), "basic.writeBw%s", ids[i]);
-        snprintf(description, sizeof(description),
-                "bandwidth writing %sB objects (%uB key)", ids[i], keyLength);
-        printBandwidth(name, dist->bandwidth, description);
-    }
-}
-
 // The following struct and table define each performance test in terms of
 // a string name and a function that implements the test.
 struct TestInfo {
@@ -6262,9 +6069,6 @@ TestInfo tests[] = {
     {"writeDistWorkload", writeDistWorkload},
     {"writeThroughput", writeThroughput},
     {"workloadThroughput", workloadThroughput},
-    {"linearizableWriteDistRandom", linearizableWriteDistRandom},
-    {"linearizableWriteThroughput", linearizableWriteThroughput},
-    {"linearizableRpc", linearizableRpc},
 };
 
 int
@@ -6328,9 +6132,7 @@ try
             options(desc).positional(desc2).run(), vm);
     po::notify(vm);
     if (logFile.size() != 0) {
-        // Redirect both stdout and stderr to the log file.  Don't
-        // call logger.setLogFile, since that will not affect printf
-        // calls.
+        // Redirect both stdout and stderr to the log file.
         FILE* f = fopen(logFile.c_str(), "w");
         if (f == NULL) {
             RAMCLOUD_LOG(ERROR, "couldn't open log file '%s': %s",
@@ -6338,6 +6140,7 @@ try
             exit(1);
         }
         stdout = stderr = f;
+        Logger::get().setLogFile(fileno(f));
     }
     Logger::get().setLogLevels(logLevel);
     if (vm.count("help")) {

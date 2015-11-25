@@ -132,7 +132,7 @@ except ImportError:
 def getHosts():
   # Find servers locked by user via rcres
   rcresOutput = commands.getoutput('rcres ls -l | grep "$(whoami)" | cut -c13-16 | grep "rc[0-9]" | cut -c3-4')
-  rcresFailed = re.match(".*command not found.*", rcresOutput)
+  rcresFailed = re.match(".*not found.*", rcresOutput)
 
   # If hosts overridden in localconfig.py, check that all servers are locked
   if 'hosts' in globals():
@@ -165,3 +165,6 @@ def getHosts():
                          '192.168.1.%d' % (100 + i),
                          i))
     return serverList
+
+if __name__ == '__main__':
+    print('\n'.join([s[0] for s in getHosts()]))

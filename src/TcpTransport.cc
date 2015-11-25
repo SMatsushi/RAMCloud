@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2014 Stanford University
+/* Copyright (c) 2010-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -21,8 +21,8 @@
 #include "Common.h"
 #include "PerfStats.h"
 #include "ShortMacros.h"
-#include "ServiceManager.h"
 #include "TcpTransport.h"
+#include "WorkerManager.h"
 
 namespace RAMCloud {
 
@@ -67,7 +67,7 @@ TcpTransport::TcpTransport(Context* context,
 {
     if (serviceLocator == NULL)
         return;
-    IpAddress address(*serviceLocator);
+    IpAddress address(serviceLocator);
     locatorString = serviceLocator->getOriginalString();
 
     listenSocket = sys->socket(PF_INET, SOCK_STREAM, 0);
@@ -313,7 +313,7 @@ TcpTransport::ServerSocketHandler::handleFileEvent(int events)
                 // The incoming request is complete; pass it off for servicing.
                 TcpServerRpc *rpc = socket->rpc;
                 socket->rpc = NULL;
-                transport.context->serviceManager->handleRpc(rpc);
+                transport.context->workerManager->handleRpc(rpc);
             }
         }
         if (events & Dispatch::FileEvent::WRITABLE) {
@@ -600,7 +600,7 @@ TcpTransport::IncomingMessage::readMessage(int fd) {
  *      There was a problem that prevented us from creating the session.
  */
 TcpTransport::TcpSession::TcpSession(TcpTransport& transport,
-        const ServiceLocator& serviceLocator,
+        const ServiceLocator* serviceLocator,
         uint32_t timeoutMs)
     : transport(transport)
     , address(serviceLocator)
@@ -614,7 +614,7 @@ TcpTransport::TcpSession::TcpSession(TcpTransport& transport,
     , alarm(transport.context->sessionAlarmTimer, this,
             (timeoutMs != 0) ? timeoutMs : DEFAULT_TIMEOUT_MS)
 {
-    setServiceLocator(serviceLocator.getOriginalString());
+    setServiceLocator(serviceLocator->getOriginalString());
     fd = sys->socket(PF_INET, SOCK_STREAM, 0);
     if (fd == -1) {
         LOG(WARNING, "TcpTransport couldn't open socket for session: %s",

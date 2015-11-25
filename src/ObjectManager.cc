@@ -110,6 +110,22 @@ ObjectManager::~ObjectManager()
 }
 
 /**
+ * Implementation of AbstractLog::ReferenceFreer. This method will be used
+ * by default on regular linearizable RPC handling.
+ * Linearizable RPC handler should pass "this" objectManager to the constructor
+ * of UnackedRpcResults.
+ *
+ * \param ref
+ *      Log reference for log entry to be freed.
+ */
+void
+ObjectManager::freeLogEntry(Log::Reference ref)
+{
+    assert(ref.toInteger());
+    log.free(ref);
+}
+
+/**
  * Perform any initialization that needed to wait until after the server has
  * enlisted. This must be called only once.
  *
@@ -333,9 +349,7 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
 
     Object object(buffer);
     if (valueOnly) {
-        uint32_t valueOffset = 0;
-        object.getValueOffset(&valueOffset);
-        object.appendValueToBuffer(outBuffer, valueOffset);
+        object.appendValueToBuffer(outBuffer);
     } else {
         object.appendKeysAndValueToBuffer(*outBuffer);
     }
@@ -371,13 +385,20 @@ ObjectManager::readObject(Key& key, Buffer* outBuffer,
  * \param[out] removedObjBuffer
  *      If non-NULL, pointer to the buffer in log for the object being removed
  *      is returned.
+ * \param rpcResult
+ *      If non-NULL, this method appends rpcResult to the log atomically with
+ *      the other record(s) for the write. The extra record is used to ensure
+ *      linearizability.
+ * \param[out] rpcResultPtr
+ *      If non-NULL, pointer to the RpcResult in log is returned.
  * \return
  *      Returns STATUS_OK if the remove succeeded. Other status values indicate
  *      different failures (tablet doesn't exist, reject rules applied, etc).
  */
 Status
 ObjectManager::removeObject(Key& key, RejectRules* rejectRules,
-                uint64_t* outVersion, Buffer* removedObjBuffer)
+                uint64_t* outVersion, Buffer* removedObjBuffer,
+                RpcResult* rpcResult, uint64_t* rpcResultPtr)
 {
     HashTableBucketLock lock(*this, key);
 
@@ -427,20 +448,34 @@ ObjectManager::removeObject(Key& key, RejectRules* rejectRules,
     ObjectTombstone tombstone(object,
                               log.getSegmentId(reference),
                               WallTime::secondsTimestamp());
-    Buffer tombstoneBuffer;
-    tombstone.assembleForLog(tombstoneBuffer);
 
-    // Write the tombstone into the Log, increment the tablet version
-    // number, and remove from the hash table.
-    if (!log.append(LOG_ENTRY_TYPE_OBJTOMB, tombstoneBuffer)) {
+    // Create a vector of appends in case we need to write multiple log entries
+    // including a tombstone and a linearizability record.
+    // This is necessary to ensure that both tombstone and rpcResult
+    // are written atomically. The log makes no atomicity guarantees across
+    // multiple append calls and we don't want a tombstone going to backups
+    // before the RpcResult, or vice versa.
+    Log::AppendVector appends[(rpcResult ? 2 : 1)];
+
+    tombstone.assembleForLog(appends[0].buffer);
+    appends[0].type = LOG_ENTRY_TYPE_OBJTOMB;
+    if (rpcResult) {
+        rpcResult->assembleForLog(appends[1].buffer);
+        appends[1].type = LOG_ENTRY_TYPE_RPCRESULT;
+    }
+
+    if (!log.append(appends, (rpcResult ? 2 : 1))) {
         // The log is out of space. Tell the client to retry and hope
         // that the cleaner makes space soon.
         return STATUS_RETRY;
     }
 
+    if (rpcResult && rpcResultPtr)
+        *rpcResultPtr = appends[1].reference.toInteger();
+
     TableStats::increment(masterTableMetadata,
                           tablet.tableId,
-                          tombstoneBuffer.size(),
+                          appends[0].buffer.size(),
                           1);
     segmentManager.raiseSafeVersion(object.getVersion() + 1);
     log.free(reference);
@@ -508,7 +543,7 @@ class DelayedIncrementer {
 void
 ObjectManager::replaySegment(SideLog* sideLog, SegmentIterator& it)
 {
-  replaySegment(sideLog, it, NULL);
+    replaySegment(sideLog, it, NULL);
 }
 
 /**
@@ -1033,8 +1068,50 @@ ObjectManager::replaySegment(SideLog* sideLog, SegmentIterator& it,
                                       buffer.size(),
                                       1);
             }
-        }
+        } else if (type == LOG_ENTRY_TYPE_TXPLIST) {
+            Buffer buffer;
+            it.appendToBuffer(buffer);
 
+            ParticipantList participantList(buffer);
+
+            bool checksumIsValid = ({
+                CycleCounter<uint64_t> c(&verifyChecksumTicks);
+                participantList.checkIntegrity();
+            });
+
+            TransactionId txId = participantList.getTransactionId();
+
+            if (expect_false(!checksumIsValid)) {
+                LOG(ERROR,
+                        "bad ParticipantList checksum! "
+                        "(leaseId: %lu, txId: %lu)",
+                        txId.clientLeaseId, txId.clientTransactionId);
+                // TODO(cstlee): Should throw and try another segment replica?
+            }
+            if (unackedRpcResults->shouldRecover(txId.clientLeaseId,
+                                                 txId.clientTransactionId,
+                                                 0)) {
+                CycleCounter<uint64_t> _(&segmentAppendTicks);
+                Log::Reference logRef;
+                if (sideLog->append(LOG_ENTRY_TYPE_TXPLIST, buffer, &logRef)) {
+                    unackedRpcResults->recoverRecord(
+                            txId.clientLeaseId,
+                            txId.clientTransactionId,
+                            0,
+                            reinterpret_cast<void*>(logRef.toInteger()));
+                    // Participant List records are not accounted for in the
+                    // table stats. The assumption is that the Participant List
+                    // records should occupy a relatively small fraction of the
+                    // server's log and thus should not significantly affect
+                    // table stats estimate.
+                } else {
+                    LOG(ERROR,
+                            "Could not append ParticipantList! "
+                            "(leaseId: %lu, txId: %lu)",
+                            txId.clientLeaseId, txId.clientTransactionId);
+                }
+            }
+        }
     }
 
     metrics->master.backupInRecoverTicks +=
@@ -1125,8 +1202,9 @@ ObjectManager::writeObject(Object& newObject, RejectRules* rejectRules,
 
     // If the tablet doesn't exist in the NORMAL state, we must plead ignorance.
     TabletManager::Tablet tablet;
-    if (!tabletManager->getTablet(key, &tablet))
+    if (!tabletManager->getTablet(key, &tablet)) {
         return STATUS_UNKNOWN_TABLET;
+    }
     if (tablet.state != TabletManager::NORMAL) {
         if (tablet.state == TabletManager::LOCKED_FOR_MIGRATION)
             throw RetryException(HERE, 1000, 2000,
@@ -1297,8 +1375,9 @@ void
 ObjectManager::writePrepareFail(RpcResult* rpcResult, uint64_t* rpcResultPtr)
 {
     Log::AppendVector av;
-    *((WireFormat::TxPrepare::Vote*)rpcResult->getResp()) =
-        WireFormat::TxPrepare::ABORT;
+    *(reinterpret_cast<WireFormat::TxPrepare::Vote*>(
+            const_cast<void*>(rpcResult->getResp()))) =
+                    WireFormat::TxPrepare::ABORT;
     rpcResult->assembleForLog(av.buffer);
     av.type = LOG_ENTRY_TYPE_RPCRESULT;
 
@@ -1315,6 +1394,75 @@ ObjectManager::writePrepareFail(RpcResult* rpcResult, uint64_t* rpcResultPtr)
             rpcResult->getTableId(),
             av.buffer.size(),
             1);
+}
+
+/**
+ * Write the RpcResult log-entry with result of Linearizable RPC.
+ * This method should be only used for failed RPCs. (So that RpcResult is
+ * the only log-entry to write on log.)
+ * \param rpcResult
+ *      This method appends rpcResult to the log. The record is used to ensure
+ *      linearizability.
+ * \param[out] rpcResultPtr
+ *      The pointer to the RpcResult in log is returned.
+ */
+void
+ObjectManager::writeRpcResultOnly(RpcResult* rpcResult, uint64_t* rpcResultPtr)
+{
+    Log::AppendVector av;
+    rpcResult->assembleForLog(av.buffer);
+    av.type = LOG_ENTRY_TYPE_RPCRESULT;
+
+    if (!log.hasSpaceFor(av.buffer.size()) || !log.append(&av, 1)) {
+        // The log is out of space. Tell the client to retry and hope
+        // that the cleaner makes space soon.
+        throw RetryException(HERE, 1000, 2000,
+                "Log is out of space! RpcResult wasn't logged. "
+                "Cannot just return failure of operation.");
+    }
+
+    *rpcResultPtr = av.reference.toInteger();
+    TableStats::increment(masterTableMetadata,
+            rpcResult->getTableId(),
+            av.buffer.size(),
+            1);
+}
+
+/**
+ * Append the provided ParticipantList to the log.
+ *
+ * \param participantList
+ *      ParticipantList to be appended.
+ * \param participantListLogRef
+ *      Log reference to the appended ParticipantList.
+ * \return
+ *      STATUS_OK if the ParticipantList could be appended.
+ *      STATUS_RETRY otherwise.
+ */
+Status
+ObjectManager::logTransactionParticipantList(ParticipantList& participantList,
+                                             uint64_t* participantListLogRef)
+{
+    Buffer participantListBuffer;
+    Log::Reference reference;
+    participantList.assembleForLog(participantListBuffer);
+
+    // Write the ParticipantList into the Log, update the table.
+    if (!log.append(LOG_ENTRY_TYPE_TXPLIST, participantListBuffer, &reference))
+    {
+        // The log is out of space. Tell the client to retry and hope
+        // that the cleaner makes space soon.
+        return STATUS_RETRY;
+    }
+
+    *participantListLogRef = reference.toInteger();
+
+    // Participant List records are not accounted for in the table stats.  The
+    // assumption is that the Participant List records should occupy a
+    // relatively small fraction of the server's log and thus should not
+    // significantly affect table stats estimate.
+
+    return STATUS_OK;
 }
 
 /**
@@ -2316,6 +2464,8 @@ ObjectManager::relocate(LogEntryType type, Buffer& oldBuffer,
         relocatePreparedOpTombstone(oldBuffer, relocator);
     else if (type == LOG_ENTRY_TYPE_TXDECISION)
         relocateTxDecisionRecord(oldBuffer, relocator);
+    else if (type == LOG_ENTRY_TYPE_TXPLIST)
+        relocateTxParticipantList(oldBuffer, relocator);
 }
 
 /**
@@ -2464,6 +2614,16 @@ ObjectManager::dumpSegment(Segment* segment)
                     decisionRecord.getTableId(), decisionRecord.getKeyHash(),
                     decisionRecord.getLeaseId());
 
+        } else if (type == LOG_ENTRY_TYPE_TXPLIST) {
+            Buffer buffer;
+            it.appendToBuffer(buffer);
+            ParticipantList participantList(buffer);
+            result += format("%sparticipantList at offset %u, length %u with "
+                    "TxId: (leaseId %lu, rpcId %lu) containing %u entries",
+                    separator, it.getOffset(), it.getLength(),
+                    participantList.getTransactionId().clientLeaseId,
+                    participantList.getTransactionId().clientTransactionId,
+                    participantList.header.participantCount);
         }
 
         it.next();
@@ -3107,6 +3267,61 @@ ObjectManager::relocateTxDecisionRecord(
                               record.getTableId(),
                               oldBuffer.size(),
                               1);
+    }
+}
+
+/**
+ * Method used by the LogCleaner when it's cleaning a Segment and comes across
+ * a ParticipantList record.
+ *
+ * This method will decide if the ParticipantList is still alive. If it is, it
+ * must move the record to a new location and update the PreparedOps module.
+ *
+ * \param oldBuffer
+ *      Buffer pointing to the ParticipantList's current location, which will
+ *      soon be invalidated.
+ * \param relocator
+ *      The relocator may be used to store the ParticipantList in a new location
+ *      if it is still alive. It also provides a reference to the new location
+ *      and keeps track of whether this call wanted the ParticipantList anymore
+ *      or not.
+ *
+ *      It is possible that relocation may fail (because more memory needs to
+ *      be allocated). In this case, the callback should just return. The
+ *      cleaner will note the failure, allocate more memory, and try again.
+ */
+void
+ObjectManager::relocateTxParticipantList(Buffer& oldBuffer,
+        LogEntryRelocator& relocator)
+{
+    ParticipantList participantList(oldBuffer);
+
+    // See if this transaction is still going on and thus if the participant
+    // list should be kept.
+    TransactionId txId = participantList.getTransactionId();
+
+    bool keep = !unackedRpcResults->isRpcAcked(txId.clientLeaseId,
+                                               txId.clientTransactionId);
+
+    if (keep) {
+        // Try to relocate it. If it fails, just return. The cleaner will
+        // allocate more memory and retry.
+        if (!relocator.append(LOG_ENTRY_TYPE_TXPLIST, oldBuffer))
+            return;
+
+        unackedRpcResults->recordCompletion(
+                txId.clientLeaseId,
+                txId.clientTransactionId,
+                reinterpret_cast<void*>(
+                        relocator.getNewReference().toInteger()),
+                true);
+    } else {
+        // Participant List will be dropped/"cleaned"
+
+        // Participant List records are not accounted for in the table stats.
+        // The assumption is that the Participant List records should occupy a
+        // relatively small fraction of the server's log and thus should not
+        // significantly affect table stats estimate.
     }
 }
 
