@@ -24,6 +24,7 @@ Arguments:
                  ex: atom
                      atom1-10 : only print atom1-10
                      1-10 : same as atom1-10 
+	             1..20 : python like format for 1-20
                      misc
 
 Options:
@@ -34,7 +35,7 @@ Options:
 """
 
 __author__ = "Collin Lee (cstlee) modified by Satoshi Matsushita (satoshi)"
-__version__ = "0.21"
+__version__ = "0.22"
 
 from docopt import docopt
 import pickle
@@ -85,7 +86,7 @@ def flushResFile():
         print("ERROR: Unable to persist request.")
 
 def printCompactStatus(cluster):
-    m = re.compile('^(\D*)(\d+)-(\d+)$').match(cluster)
+    m = re.compile('^(\D*)(\d+)(-|(\.\.))(\d+)$').match(cluster)
     if m:
         if not m.group(1):
             cluster = DEFAULTCLUSTER + cluster
@@ -118,7 +119,7 @@ def printCompactStatus(cluster):
 
 def printListStatus(cluster):
     if cluster:
-        m = re.compile('^(\D*)(\d+)-(\d+)$').match(cluster)
+        m = re.compile('^(\D*)(\d+)(-|(\.\.))(\d+)$').match(cluster)
         if m:
             if not m.group(1):
                 cluster = DEFAULTCLUSTER + cluster
@@ -154,7 +155,7 @@ def status(listMode, cluster):
     if cluster:
         cluster = cluster.lower()
         cbody = cluster
-        m = re.compile('^(\D*)(\d+)-(\d+)$').match(cluster)
+        m = re.compile('^(\D*)(\d+)(-|(\.\.))(\d+)$').match(cluster)
         if m:
              cbody = m.group(1)
     if not cbody or cbody == "atom":
@@ -240,7 +241,7 @@ def unlockList(idList, user, force):
 
 def parseServerIds(serverIds):
     serverIdList = []
-    isRange = re.compile('^\D+\d+\-\d+$')
+    isRange = re.compile('^\D+\d+(\-|(\.\.))\d+$')
     splitter = re.compile('\D+')
     if isRange.match(serverIds):
         prefix = splitter.match(serverIds).group()
