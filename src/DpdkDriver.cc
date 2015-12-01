@@ -107,14 +107,14 @@ DpdkDriver::DpdkDriver(Context* context,
 
     // initialize the DPDK environment with some default parameters
     const char *argv[] = {"rc", "-c 1", "-n 1"};
-    int argc = sizeof(argv) / sizeof(argv[0]);
+    int argc = static_cast<int>(sizeof(argv) / sizeof(argv[0]));
 
     ret = rte_eal_init(argc, const_cast<char**>(argv));
 
     // create an memory pool for accommodating packet buffers
     packetPool = rte_mempool_create("mbuf_pool", NB_MBUF,
                                       MBUF_SIZE, 32,
-                                      sizeof(struct rte_pktmbuf_pool_private),
+                                      static_cast<uint32_t>(sizeof(struct rte_pktmbuf_pool_private)),
                                       rte_pktmbuf_pool_init, NULL,
                                       rte_pktmbuf_init, NULL,
                                       rte_socket_id(), 0);
@@ -147,7 +147,7 @@ DpdkDriver::DpdkDriver(Context* context,
     // configure some default NIC port parameters
     memset(&portConf, 0, sizeof(portConf));
     portConf.rxmode.max_rx_pkt_len = MAX_PAYLOAD_SIZE +
-            sizeof(NetUtil::EthernetHeader);
+            static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader));
     rte_eth_dev_configure(portId, 1, 1, &portConf);
 
     // setup a NIC/HW-based filter on the ethernet type so that
@@ -198,8 +198,8 @@ DpdkDriver::DpdkDriver(Context* context,
     }
 
     // set the MTU that the NIC port should support
-    ret = rte_eth_dev_set_mtu(portId, MAX_PAYLOAD_SIZE +
-            sizeof(NetUtil::EthernetHeader));
+    ret = rte_eth_dev_set_mtu(portId, static_cast<uint16_t>(MAX_PAYLOAD_SIZE +
+            static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader))));
     if (ret != 0) {
         throw DriverException(HERE, format(
                 "Failed to set the MTU on the Ethernet port: %s",
@@ -225,8 +225,9 @@ DpdkDriver::DpdkDriver(Context* context,
     // essentially kills performance, as every thread is contenting for a
     // single core. Revert this, by restoring the affinity to the default
     // (all cores).
-#if !defined(WA_FOR_NDEBUG)
+#if defined(WA_FOR_NDEBUG)
     Util::clearCpuAffinity();
+    LOG(NOTICE, "Util:clearCpuAffinity");
 #endif
 }
 
@@ -269,7 +270,7 @@ DpdkDriver::disconnect()
 uint32_t
 DpdkDriver::getMaxPacketSize()
 {
-    return MAX_PAYLOAD_SIZE - sizeof(NetUtil::EthernetHeader);
+    return MAX_PAYLOAD_SIZE - static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader));
 }
 
 // See docs in Driver class.

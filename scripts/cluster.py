@@ -59,6 +59,7 @@ server_locator_templates = {
     'fast+infeth': 'fast+infeth:mac=00:11:22:33:44:%(id)02x',
     'unreliable+infeth': 'unreliable+infeth:mac=00:11:22:33:44:%(id)02x',
     'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0',
+    'basic+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0',
 }
 coord_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
@@ -77,6 +78,7 @@ coord_locator_templates = {
     'fast+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
     'unreliable+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
     'fast+dpdk': 'tcp:host=%(host)s,port=%(port)d',
+    'basic+dpdk': 'tcp:host=%(host)s,port=%(port)d',
 }
 
 def server_locator(transport, host, port=server_port):
