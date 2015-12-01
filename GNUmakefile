@@ -41,7 +41,8 @@ endif
 # ExternalStorage implementation.
 ZOOKEEPER ?= yes
 ifeq ($(ZOOKEEPER),yes)
-ZOOKEEPER_LIB ?= -lzookeeper_mt
+# ZOOKEEPER_LIB ?= -lzookeeper_mt
+ZOOKEEPER_LIB ?= /usr/local/lib/libzookeeper_mt.a
 ZOOKEEPER_DIR ?= /usr/local/zookeeper-3.4.5
 else
 ZOOKEEPER_LIB :=
