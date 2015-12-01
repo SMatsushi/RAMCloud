@@ -163,7 +163,7 @@ for host in hosts:
 
 hosts = get_host_info(use_hosts)
 # if mmres is available, enable following line:
-#hosts = get_hosts_from_mmres()
+hosts = get_hosts_from_mmres()
 
 # Command-line argument specifying where the first backup on each
 # server should storage the segment replicas.
@@ -204,18 +204,16 @@ except ImportError:
 def getHosts():
   # Find servers locked by user via rcres
   rcresOutput = commands.getoutput('rcres ls -l | grep "$(whoami)" | cut -c13-16 | grep "rc[0-9]" | cut -c3-4')
-  rcresFailed = re.match(".*not found.*", rcresOutput)
+  rcresFailed = re.match(".*command not found.*", rcresOutput)
 
   # If hosts overridden in localconfig.py, check that all servers are locked
   if 'hosts' in globals():
-    if rcresFailed:
-      return hosts
     requstedUnlockedHosts = []
     for host in hosts:
       if str("%02d" % host[2]) not in rcresOutput.split():
         requstedUnlockedHosts.append(host[0])
 
-    if len(requstedUnlockedHosts) > 0:
+    if not rcresFailed and len(requstedUnlockedHosts) > 0:
       raise Exception ("Manually defined hosts list in localconfig.py includes the "
         "following servers not locked by user in rcres:\r\n\t%s" % requstedUnlockedHosts)
 
