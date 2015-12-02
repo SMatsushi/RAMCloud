@@ -58,8 +58,10 @@ server_locator_templates = {
     'unreliable+infud': 'unreliable+infud:host=%(host1g)s',
     'fast+infeth': 'fast+infeth:mac=00:11:22:33:44:%(id)02x',
     'unreliable+infeth': 'unreliable+infeth:mac=00:11:22:33:44:%(id)02x',
-    'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0',
-    'basic+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0',
+#    'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0',
+    'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
+#    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0',
+    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
 }
 coord_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
@@ -121,6 +123,7 @@ def coord_locator(transport, host):
                {'host': host[1],
                 'host1g': host[0],
                 'port': coordinator_port,
+                'mac': host[3],
                 'id': host[2]})
     return locator
 
@@ -145,6 +148,8 @@ class Cluster(object):
     @ivar disk: Server args for specifying the storage device to use for
                 backups (default: default_disk1 taken from {,local}config.py).
     @ivar disjunct: Disjunct (not collocate) entities on each server.
+    @ivar tcp_only_coord: Only use tcp connection to cooordinator.
+                It suppresses opening dpdk port at enlistserver request.
 
     === Other Stuff ===
     @ivar coordinator: None until start_coordinator() is run, then a
@@ -190,6 +195,7 @@ class Cluster(object):
         self.replicas = 3
         self.disk = default_disk1
         self.disjunct = False
+        self.tcp_only_coord = False
 
         if cluster_name_exists: # do nothing if it exists
             self.cluster_name = None
