@@ -56,6 +56,7 @@ class TransportManager {
     void dumpTransportFactories();
     void setSessionTimeout(uint32_t timeoutMs);
     uint32_t getSessionTimeout() const;
+    void setTcpOnly(bool tcpOnly);
 
 #if TESTING
     /**
@@ -172,6 +173,8 @@ class TransportManager {
      * to unregisterMock), so we can clean up automatically in the destructor.
      */
     uint32_t mockRegistrations;
+
+    bool tcpOnly;
 
     DISALLOW_COPY_AND_ASSIGN(TransportManager);
 };

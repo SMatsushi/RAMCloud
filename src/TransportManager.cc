@@ -172,6 +172,7 @@ TransportManager::TransportManager(Context* context)
     , mutex("TransportManager::mutex")
     , sessionTimeoutMs(0)
     , mockRegistrations(0)
+    , tcpOnly(false)
 {
     transportFactories.push_back(&tcpTransportFactory);
     transportFactories.push_back(&basicUdpTransportFactory);
@@ -208,6 +209,13 @@ TransportManager::~TransportManager()
         delete transport;
 }
 
+void
+TransportManager::setTcpOnly(bool tcpOnlyMode)
+{
+    LOG(NOTICE, "set tcpOnly=%s", tcpOnlyMode ? "true" : "false");
+    TransportManager::tcpOnly=tcpOnlyMode;
+}
+
 /**
  * This method is invoked only on servers; it creates transport(s) that will be
  * used to receive RPC requests.  These transports can also be used for outgoing
@@ -221,6 +229,8 @@ TransportManager::~TransportManager()
 void
 TransportManager::initialize(const char* localServiceLocator)
 {
+    LOG(NOTICE,"Starting initialize: loc=%s tcpOnly=%d",
+        localServiceLocator, tcpOnly);
     isServer = true;
     Dispatch::Lock lock(context->dispatch);
     std::vector<ServiceLocator> locators =
@@ -412,8 +422,19 @@ TransportManager::openSessionInternal(const string& serviceLocator)
     foreach (ServiceLocator& locator, locators) {
         for (uint32_t i = 0; i < transportFactories.size(); i++) {
             TransportFactory* factory = transportFactories[i];
-            if (!factory->supports(locator.getProtocol().c_str())) {
+            const char *locCp;
+            if (!factory->supports(locCp = locator.getProtocol().c_str())) {
                 continue;
+            }
+
+            LOG(NOTICE,"localtor: %s", locCp);
+            if (tcpOnly) {
+                if (strcmp(locCp,"tcp")) {
+                    // not match to tcp
+                    LOG(WARNING,"tcpOlny mode: %s not supported. skipped.",
+                        locCp);
+                    continue;
+                }
             }
 
             if (transports[i] == NULL) {
