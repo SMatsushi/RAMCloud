@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2015 Stanford University
+/* Copyright (c) 2009-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -432,7 +432,7 @@ TEST_F(BackupServiceTest, startReadingData) {
             "will clean up as next possible chance. | "
         "schedule: scheduled | "
         "start: Backup preparing for recovery 457 of crashed server 99.0; "
-            "loading replicas | "
+            "loading 0 primary replicas | "
         "populateStartResponse: Crashed master 99.0 had closed secondary "
             "replica for segment 88 | "
         "populateStartResponse: Crashed master 99.0 had closed secondary "
@@ -483,24 +483,10 @@ TEST_F(BackupServiceTest, writeSegment_segmentNotOpen) {
 TEST_F(BackupServiceTest, writeSegment_segmentClosed) {
     openSegment(ServerId(99, 0), 88);
     closeSegment(ServerId(99, 0), 88);
-    EXPECT_THROW(
-        writeRawString({99, 0}, 88, 10, "test"),
-        BackupBadSegmentIdException);
-}
-
-TEST_F(BackupServiceTest, writeSegment_segmentClosedRedundantClosingWrite) {
-    // This may seem counterintuitive, but throwing an exception on a write
-    // after close is actually better than idempotent behavior. The backup
-    // throws a client exception on subsequent writes. If the master retried
-    // the write rpc and the backup had already received the request then the
-    // master should never receive the response with the client exception
-    // (the request will have gotten the response from the first request).
-    // If the backup never received the first request from the master then
-    // it won't generate a client exception on the retry.
-    openSegment(ServerId(99, 0), 88);
-    closeSegment(ServerId(99, 0), 88);
-    EXPECT_THROW(writeRawString({99, 0}, 88, 10, "test", true),
-                 BackupBadSegmentIdException);
+    TestLog::reset();
+    writeRawString({99, 0}, 88, 10, "test");
+    EXPECT_EQ("writeSegment: Write requested for closed replica <99.0,88>; "
+            "treating the request as noop", TestLog::get());
 }
 
 TEST_F(BackupServiceTest, writeSegment_badOffset) {
@@ -582,26 +568,10 @@ TEST_F(BackupServiceTest, writeSegment_openSegmentOutOfStorage) {
     EXPECT_THROW(
         openSegment(ServerId(99, 0), 90),
         BackupOpenRejectedException);
-    EXPECT_TRUE(TestUtil::contains(TestLog::get(),
-            "Segment replicas currently open:"));
     TestLog::reset();
     EXPECT_THROW(
         openSegment(ServerId(99, 0), 90),
         BackupOpenRejectedException);
-    EXPECT_FALSE(TestUtil::contains(TestLog::get(),
-            "Segment replicas currently open:"));
-}
-
-TEST_F(BackupServiceTest, logOpenReplicas) {
-    openSegment(ServerId(99, 0), 85);
-    openSegment(ServerId(99, 0), 86);
-    openSegment(ServerId(52, 24), 87);
-    openSegment(ServerId(99, 0), 88);
-    closeSegment(ServerId(99, 0), 86);
-    TestLog::reset();
-    backup->logOpenReplicas();
-    EXPECT_EQ("logOpenReplicas: Segment replicas currently open: "
-            "<99.0, 85> <99.0, 88> <52.24, 87>", TestLog::get());
 }
 
 TEST_F(BackupServiceTest, GarbageCollectDownServerTask) {
@@ -631,8 +601,9 @@ TEST_F(BackupServiceTest, GarbageCollectDownServerTask) {
     TestLog::Enable _;
     // Runs the now scheduled BackupMasterRecovery to free it up.
     backup->taskQueue.performTask();
-    EXPECT_EQ("performTask: State for recovery 456 for crashed master 99.0 "
-              "freed on backup", TestLog::get());
+    EXPECT_EQ("performTask: Freeing recovery state on backup for crashed "
+              "master 99.0 (recovery 456), including 0 filtered replicas",
+              TestLog::get());
 
     backup->taskQueue.performTask();
     EXPECT_EQ(backup->frames.end(), backup->frames.find({{99, 0}, 88}));

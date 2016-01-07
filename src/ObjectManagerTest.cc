@@ -772,6 +772,7 @@ TEST_F(ObjectManagerTest, removeOrphanedObjects) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_nextNodeIdMap) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -794,6 +795,7 @@ TEST_F(ObjectManagerTest, replaySegment_nextNodeIdMap) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_tombstoneSynthesis) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -829,6 +831,7 @@ TEST_F(ObjectManagerTest, replaySegment_tombstoneSynthesis) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_tombstoneSegmentId) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -867,6 +870,7 @@ TEST_F(ObjectManagerTest, replaySegment_tombstoneSegmentId) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1172,6 +1176,7 @@ TEST_F(ObjectManagerTest, replaySegment) {
 }
 
 TEST_F(ObjectManagerTest, replaySafeversion) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1254,6 +1259,7 @@ TEST_F(ObjectManagerTest, replaySafeversion) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_rpcResult) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1301,6 +1307,7 @@ TEST_F(ObjectManagerTest, replaySegment_rpcResult) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_preparedOp_basics) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1309,7 +1316,7 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_basics) {
 
     PreparedOps *preparedOps = objectManager.preparedOps;
 
-    EXPECT_EQ(0UL, preparedOps->peekOp(1UL, 10UL));
+    EXPECT_EQ(0UL, preparedOps->getOp(1UL, 10UL));
 
     {   // 1. Test regular PreparedOp.
         SegmentCertificate certificate;
@@ -1324,7 +1331,7 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_basics) {
     }
     objectManager.replaySegment(&sl, *it);
 
-    EXPECT_NE(0UL, preparedOps->peekOp(1UL, 10UL));
+    EXPECT_NE(0UL, preparedOps->getOp(1UL, 10UL));
 
 
     {   // 2. Ignored preparedOp due to old version number.
@@ -1347,7 +1354,7 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_basics) {
     }
     objectManager.replaySegment(&sl, *it);
 
-    EXPECT_EQ(0UL, preparedOps->peekOp(1UL, 11UL));
+    EXPECT_EQ(0UL, preparedOps->getOp(1UL, 11UL));
 
 
     {   // 3. preparedOp with higher version number.
@@ -1363,9 +1370,9 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_basics) {
     }
     objectManager.replaySegment(&sl, *it);
 
-    EXPECT_NE(0UL, preparedOps->peekOp(1UL, 11UL));
+    EXPECT_NE(0UL, preparedOps->getOp(1UL, 11UL));
 
-    uint64_t newOpPtr = preparedOps->peekOp(1UL, 11UL);
+    uint64_t newOpPtr = preparedOps->getOp(1UL, 11UL);
     Buffer preparedOpBuffer;
     Log::Reference resultRef(newOpPtr);
     objectManager.getLog()->getEntry(resultRef, preparedOpBuffer);
@@ -1379,6 +1386,7 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_basics) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_preparedOp_withTombstone) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1387,7 +1395,7 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_withTombstone) {
 
     PreparedOps *preparedOps = objectManager.preparedOps;
 
-    EXPECT_EQ(0UL, preparedOps->peekOp(1UL, 10UL));
+    EXPECT_EQ(0UL, preparedOps->getOp(1UL, 10UL));
     EXPECT_FALSE(preparedOps->isDeleted(1UL, 10UL));
 
     ///////////////////////////////////////////////////////
@@ -1406,7 +1414,7 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_withTombstone) {
     }
     objectManager.replaySegment(&sl, *it);
 
-    EXPECT_NE(0UL, preparedOps->peekOp(1UL, 10UL));
+    EXPECT_NE(0UL, preparedOps->getOp(1UL, 10UL));
     EXPECT_FALSE(preparedOps->isDeleted(1UL, 10UL));
 
     {   // 1B. Tombstone for PreparedOp in 1.
@@ -1461,6 +1469,7 @@ TEST_F(ObjectManagerTest, replaySegment_preparedOp_withTombstone) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_TxDecisionRecord_basic) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1490,6 +1499,7 @@ TEST_F(ObjectManagerTest, replaySegment_TxDecisionRecord_basic) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_TxDecisionRecord_nop) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1521,6 +1531,7 @@ TEST_F(ObjectManagerTest, replaySegment_TxDecisionRecord_nop) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_ParticipantList_basic) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1558,6 +1569,7 @@ TEST_F(ObjectManagerTest, replaySegment_ParticipantList_basic) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_ParticipantList_noop_acked) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint32_t segLen = 8192;
     char seg[segLen];
     uint32_t len; // number of bytes in a recovery segment
@@ -1577,7 +1589,8 @@ TEST_F(ObjectManagerTest, replaySegment_ParticipantList_noop_acked) {
     // pre-insert ack
     unackedRpcResults->shouldRecover(txId.clientLeaseId,
                                      txId.clientTransactionId,
-                                     txId.clientTransactionId);
+                                     txId.clientTransactionId,
+                                     LOG_ENTRY_TYPE_TXPLIST);
     EXPECT_TRUE(unackedRpcResults->clients.find(txId.clientLeaseId) !=
             unackedRpcResults->clients.end());
     EXPECT_TRUE(unackedRpcResults->isRpcAcked(txId.clientLeaseId,
@@ -1599,6 +1612,7 @@ TEST_F(ObjectManagerTest, replaySegment_ParticipantList_noop_acked) {
 }
 
 TEST_F(ObjectManagerTest, replaySegment_ParticipantList_noop_hasPListEntry) {
+    ObjectManager::TombstoneProtector p(&objectManager);
     TestLog::Enable _;
     uint32_t segLen = 8192;
     char seg[segLen];
@@ -1634,8 +1648,8 @@ TEST_F(ObjectManagerTest, replaySegment_ParticipantList_noop_hasPListEntry) {
 
     TestLog::reset();
     objectManager.replaySegment(&sl, *it);
-    EXPECT_EQ("shouldRecover: Duplicate RpcResult or ParticipantList found "
-                    "during recovery. <clientID, rpcID, ackId> = <42, 9, 0>",
+    EXPECT_EQ("shouldRecover: Duplicate Transaction Participant List Record "
+              "found during recovery. <clientID, rpcID, ackId> = <42, 9, 0>",
               TestLog::get());
 
     EXPECT_TRUE(unackedRpcResults->hasRecord(txId.clientLeaseId,
@@ -2223,56 +2237,93 @@ TEST_F(ObjectManagerTest, writeTombstone) {
               , verifyMetadata(1));
 }
 
-TEST_F(ObjectManagerTest, RemoveTombstonePoller_poll) {
+TEST_F(ObjectManagerTest, TombstoneRemover_handleTimerEvent_noWorkToDo) {
     LogEntryType type;
     Buffer buffer;
+    TestLog::Enable logEnabler;
 
-    Key key(0, "key!", 4);
-    storeTombstone(key);
+    Key key1(0, "key1", 4);
+    storeTombstone(key1);
 
-    ObjectManager::RemoveTombstonePoller* remover =
-        objectManager.tombstoneRemover.get();
-
-    // poller should do nothing if it doesn't think there's work to do
-    EXPECT_EQ(0U, remover->currentBucket);
-    objectManager.tombstoneRemover->lastReplaySegmentCount =
-        objectManager.replaySegmentReturnCount = 0;
-
-    TestLog::Enable _(antiGetEntryFilter);
-
-    int sumOfReturns = 0;
-    for (uint64_t i = 0; i < 2 * objectManager.objectMap.getNumBuckets(); i++)
-        sumOfReturns += objectManager.tombstoneRemover->poll();
-    EXPECT_EQ(0, sumOfReturns);
-    EXPECT_EQ("", TestLog::get());
-    {
-        ObjectManager::HashTableBucketLock lock(objectManager, key);
-        EXPECT_TRUE(objectManager.lookup(lock, key, type, buffer, 0, 0));
-    }
-
-    // now it should scan the whole thing
     TestLog::reset();
-    EXPECT_EQ(0U, remover->currentBucket);
-    objectManager.replaySegmentReturnCount++;
-    sumOfReturns = 0;
-    for (uint64_t i = 0; i < objectManager.objectMap.getNumBuckets(); i++)
-        sumOfReturns += objectManager.tombstoneRemover->poll();
-    EXPECT_LT(100, sumOfReturns);
-    EXPECT_EQ("removeIfTombstone: discarding | "
-              "poll: Cleanup of tombstones completed pass 0", TestLog::get());
-    EXPECT_EQ(1U, remover->passes);
-    {
-        ObjectManager::HashTableBucketLock lock(objectManager, key);
-        EXPECT_FALSE(objectManager.lookup(lock, key, type, buffer, 0, 0));
-    }
+    objectManager.tombstoneRemover.currentBucket =
+            objectManager.objectMap.getNumBuckets();
+    objectManager.tombstoneRemover.handleTimerEvent();
+    EXPECT_EQ("handleTimerEvent: Tombstone cleanup complete",
+            TestLog::get());
+    ObjectManager::HashTableBucketLock lock(objectManager, key1);
+    EXPECT_TRUE(objectManager.lookup(lock, key1, type, buffer, 0, 0));
+}
 
-    // and it shouldn't run anymore...
+TEST_F(ObjectManagerTest, TombstoneRemover_handleTimerEvent_doWork) {
+    LogEntryType type;
+    Buffer buffer;
+    TestLog::Enable logEnabler("handleTimerEvent");
+
+    // Create two tombstones; both had better get removed.
+    Key key1(0, "key1", 4);
+    storeTombstone(key1);
+    Key key2(0, "key2", 4);
+    storeTombstone(key2);
+
     TestLog::reset();
-    sumOfReturns = 0;
-    for (uint64_t i = 0; i < 2 * objectManager.objectMap.getNumBuckets(); i++)
-        sumOfReturns += objectManager.tombstoneRemover->poll();
-    EXPECT_EQ(0, sumOfReturns);
+    objectManager.tombstoneRemover.currentBucket = 0;
+    objectManager.tombstoneRemover.handleTimerEvent();
+    EXPECT_EQ(100lu, objectManager.tombstoneRemover.currentBucket);
+    EXPECT_TRUE(objectManager.tombstoneRemover.isRunning());
     EXPECT_EQ("", TestLog::get());
+
+    while (true) {
+        uint64_t oldCurrent = objectManager.tombstoneRemover.currentBucket;
+        objectManager.tombstoneRemover.handleTimerEvent();
+        if (!TestLog::get().empty()) {
+            break;
+        }
+        EXPECT_LT(oldCurrent, objectManager.tombstoneRemover.currentBucket);
+    }
+    EXPECT_EQ("handleTimerEvent: Tombstone cleanup complete",
+            TestLog::get());
+    EXPECT_EQ(objectManager.objectMap.getNumBuckets(),
+            objectManager.tombstoneRemover.currentBucket);
+    {
+        ObjectManager::HashTableBucketLock lock(objectManager, key1);
+        EXPECT_FALSE(objectManager.lookup(lock, key1, type, buffer, 0, 0));
+    }
+    {
+        ObjectManager::HashTableBucketLock lock(objectManager, key2);
+        EXPECT_FALSE(objectManager.lookup(lock, key2, type, buffer, 0, 0));
+    }
+}
+
+TEST_F(ObjectManagerTest, TombstoneProtector) {
+    TestLog::Enable logEnabler("handleTimerEvent");
+    Tub<ObjectManager::TombstoneProtector> protector1, protector2;
+    protector1.construct(&objectManager);
+    protector2.construct(&objectManager);
+    objectManager.tombstoneRemover.currentBucket = 1000;
+    EXPECT_EQ(2, objectManager.tombstoneProtectorCount);
+
+    protector2.destroy();
+    EXPECT_EQ(1, objectManager.tombstoneProtectorCount);
+    EXPECT_FALSE(objectManager.tombstoneRemover.isRunning());
+
+    protector1.destroy();
+    EXPECT_EQ(0, objectManager.tombstoneProtectorCount);
+    EXPECT_TRUE(objectManager.tombstoneRemover.isRunning());
+    EXPECT_EQ(0lu, objectManager.tombstoneRemover.currentBucket);
+
+    // Constructing a TombstoneProtector should stop the WorkerTimer.
+    protector1.construct(&objectManager);
+    EXPECT_FALSE(objectManager.tombstoneRemover.isRunning());
+
+    // Finally, make sure that the Dispath/WorkerTimer machinery actually
+    // causes the tombstone remover to run.
+    TestLog::reset();
+    protector1.destroy();
+    objectManager.context->dispatch->poll();
+    TestUtil::waitForLog();
+    EXPECT_EQ("handleTimerEvent: Tombstone cleanup complete",
+            TestLog::get());
 }
 
 TEST_F(ObjectManagerTest, lookup_object) {
@@ -2669,7 +2720,7 @@ TEST_F(ObjectManagerTest, relocatePreparedOp_relocate) {
                            oldReference, relocator);
     EXPECT_TRUE(relocator.didAppend);
 
-    uint64_t newOpPtr = preparedOps.peekOp(op.header.clientId,
+    uint64_t newOpPtr = preparedOps.getOp(op.header.clientId,
                                               op.header.rpcId);
     EXPECT_NE(0UL, newOpPtr);
     EXPECT_NE(oldReference.toInteger(), newOpPtr);
@@ -2710,13 +2761,13 @@ TEST_F(ObjectManagerTest, relocatePreparedOp_clean) {
     LogEntryRelocator relocator(
         objectManager.segmentManager.getHeadSegment(), 1000);
 
-    preparedOps.popOp(op.header.clientId, op.header.rpcId);
+    preparedOps.removeOp(op.header.clientId, op.header.rpcId);
 
     objectManager.relocate(LOG_ENTRY_TYPE_PREP, oldBuffer,
                            oldReference, relocator);
     EXPECT_FALSE(relocator.didAppend);
 
-    uint64_t newOpPtr = preparedOps.peekOp(op.header.clientId,
+    uint64_t newOpPtr = preparedOps.getOp(op.header.clientId,
                                               op.header.rpcId);
     EXPECT_EQ(0UL, newOpPtr);
     EXPECT_NE(oldReference.toInteger(), newOpPtr);
@@ -3177,7 +3228,8 @@ TEST_F(ObjectManagerTest, relocateTxParticipantList_relocate) {
                             txId.clientTransactionId)));
 
     // Make sure the PariticipantList is considered live.
-    objectManager.unackedRpcResults->shouldRecover(42, 10, 0);
+    objectManager.unackedRpcResults->shouldRecover(42, 10, 0,
+                                                   LOG_ENTRY_TYPE_TXPLIST);
     EXPECT_FALSE(objectManager.unackedRpcResults->isRpcAcked(42, 10));
 
     LogEntryType oldTypeInLog;
@@ -3233,7 +3285,8 @@ TEST_F(ObjectManagerTest, relocateTxParticipantList_clean) {
                             txId.clientTransactionId)));
 
     // Make sure the PariticipantList is not considered live.
-    objectManager.unackedRpcResults->shouldRecover(42, 10, 11);
+    objectManager.unackedRpcResults->shouldRecover(42, 10, 11,
+                                                   LOG_ENTRY_TYPE_TXPLIST);
     EXPECT_TRUE(objectManager.unackedRpcResults->isRpcAcked(42, 9));
 
     LogEntryType oldTypeInLog;

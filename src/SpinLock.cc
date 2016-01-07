@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014 Stanford University
+/* Copyright (c) 2011-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -51,22 +51,6 @@ namespace SpinLockTable {
 } // namespace SpinLockTable
 
 /**
- * Construct a new, unnamed SpinLock. This method should be avoided in
- * preference of the one that takes a name argument. It exists mainly to
- * handle cases when arrays of SpinLocks are declared.
- */
-SpinLock::SpinLock()
-    : mutex(0)
-    , name("unnamed")
-    , acquisitions(0)
-    , contendedAcquisitions(0)
-    , contendedTicks(0)
-{
-    std::lock_guard<std::mutex> lock(*SpinLockTable::lock());
-    SpinLockTable::allLocks()->insert(this);
-}
-
-/**
  * Construct a new SpinLock and give it the provided name.
  */
 SpinLock::SpinLock(string name)
@@ -75,6 +59,7 @@ SpinLock::SpinLock(string name)
     , acquisitions(0)
     , contendedAcquisitions(0)
     , contendedTicks(0)
+    , logWaits(false)
 {
     std::lock_guard<std::mutex> lock(*SpinLockTable::lock());
     SpinLockTable::allLocks()->insert(this);
@@ -96,8 +81,21 @@ SpinLock::lock()
     uint64_t startOfContention = 0;
 
     while (mutex.exchange(1) != 0) {
-        if (startOfContention == 0)
+        if (startOfContention == 0) {
             startOfContention = Cycles::rdtsc();
+            if (logWaits) {
+                RAMCLOUD_TEST_LOG("Waiting on SpinLock");
+            }
+        } else {
+            uint64_t now = Cycles::rdtsc();
+            if (Cycles::toSeconds(now - startOfContention) > 1.0) {
+                RAMCLOUD_LOG(WARNING,
+                        "%s SpinLock locked for one second; deadlock?",
+                        name.c_str());
+                contendedTicks += now - startOfContention;
+                startOfContention = now;
+            }
+        }
     }
     Fence::enter();
 

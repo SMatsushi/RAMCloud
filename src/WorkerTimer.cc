@@ -17,10 +17,10 @@
 
 #include "Cycles.h"
 #include "Logger.h"
+#include "LogProtector.h"
 #include "ShortMacros.h"
 #include "Unlock.h"
 #include "WorkerTimer.h"
-#include "ServerRpcPool.h"
 
 namespace RAMCloud {
 std::mutex WorkerTimer::mutex;
@@ -134,10 +134,11 @@ void WorkerTimer::stopInternal(Lock& lock)
     // delete a timer out from underneath a running handler), but it
     // can result in deadlock if a handler tries to delete itself
     // (e.g. see RAM-806). In order to detect deadlocks, print a warning
-    // message if the handler doesn't complete quickly.
+    // message if the handler doesn't complete for a long time.
     while (handlerRunning) {
         TEST_LOG("waiting for handler");
-        std::chrono::milliseconds timeout(stopWarningMs ? stopWarningMs : 1000);
+        std::chrono::milliseconds timeout(
+                stopWarningMs ? stopWarningMs : 10000);
         if (handlerFinished.wait_until(lock, std::chrono::system_clock::now()
                 + timeout) == std::cv_status::timeout) {
             LOG(WARNING, "WorkerTimer stalled waiting for handler to "
@@ -172,7 +173,7 @@ WorkerTimer::Manager::Manager(Dispatch* dispatch, Lock& lock)
     , workerThread()
     , waitingForWork()
     , activeTimers()
-    , epoch(~0)
+    , logProtectorActivity()
     , links()
 {
     managers.push_back(*this);
@@ -207,9 +208,17 @@ WorkerTimer::Manager::~Manager()
 void
 WorkerTimer::Manager::handleTimerEvent()
 {
-    // There used to be a WorkerTimer::mutex here, but it is not necessary to
-    // hold a lock and it causes deadlock between dispatch thread and the
-    // WorkerTimer thread.  Just wake up the worker thread.
+    // This code has gone back and forth on whether to lock WorkerTimer::mutex
+    // here. Initially it locked, but that caused the deadlock with the
+    // dispatch thread (WorkerTimer::mutex held when restarting this
+    // Dispatch::Timer, which required the dispatch lock, which the dispatch
+    // thread can't release because it is trying to lock WorkerTimer::mutex
+    // here). So, we removed the lock. But, this caused notifications on
+    // waitingForWork to be lost if they happened before workerThreadMain
+    // executed its wait. So, now we're back to locking again. This appears to
+    // be safe because Dispatch::Timer::start now uses a mutex rather than
+    // the dispatch lock.
+    Lock lock(mutex);
     waitingForWork.notify_one();
 }
 
@@ -242,28 +251,11 @@ WorkerTimer::findManager(Dispatch* dispatch, Lock& lock)
 }
 
 /**
- * Obtain the earliest (lowest value) epoch of any outstanding WorkerTimer in
- * the system. If there are no ongoing timer handlers, then the return value
- * is -1 (i.e. the largest 64-bit unsigned integer).
- */
-uint64_t
-WorkerTimer::getEarliestOutstandingEpoch()
-{
-    Lock _(mutex);
-    uint64_t earliest = ~0;
-
-    for (ManagerList::iterator it(managers.begin());
-            it != managers.end(); it++) {
-        earliest = std::min(it->epoch, earliest);
-    }
-    return earliest;
-}
-
-/**
  * This method does most of the work for the worker thread. It checks
  * to see if any WorkerTimers are ready to execute and, if so, it
  * runs one of them. In addition, it restarts the Dispatch::Timer
- * for this manager if there are WorkerTimers still waiting.
+ * for this manager if there are WorkerTimers still waiting. It only
+ * returns when there are no more timers to run.
  *
  * \param lock
  *      Used to ensure that caller has acquired WorkerTimer::mutex.
@@ -271,44 +263,47 @@ WorkerTimer::getEarliestOutstandingEpoch()
  */
 void WorkerTimer::Manager::checkTimers(Lock& lock)
 {
-    // Scan the list of active timers to (a) find a timer that's ready to run
-    // (if there is one) and (b) recompute earliestTriggerTime.
-    WorkerTimer* ready = NULL;
-    uint64_t newEarliest = ~0lu;
-    uint64_t now = Cycles::rdtsc();
-    for (Manager::TimerList::iterator
-            timerIterator(activeTimers.begin());
-            timerIterator != activeTimers.end();
-            timerIterator++) {
-        // Note: if multiple WorkerTimers are ready, run the one that
-        // has been on the queue the longest (this prevents starvation).)
-        if ((timerIterator->triggerTime <= now)
-                && (ready == NULL)) {
-            ready = &(*timerIterator);
-        } else {
-            if (timerIterator->triggerTime < newEarliest) {
-                newEarliest = timerIterator->triggerTime;
+    while (1) {
+        // Scan the list of active timers to (a) find a timer that's ready
+        // to run (if there is one) and (b) recompute earliestTriggerTime.
+        WorkerTimer* ready = NULL;
+        uint64_t newEarliest = ~0lu;
+        uint64_t now = Cycles::rdtsc();
+        for (Manager::TimerList::iterator
+                timerIterator(activeTimers.begin());
+                timerIterator != activeTimers.end();
+                timerIterator++) {
+            // Note: if multiple WorkerTimers are ready, run the one that
+            // has been on the queue the longest (this prevents starvation).)
+            if ((timerIterator->triggerTime <= now)
+                    && (ready == NULL)) {
+                ready = &(*timerIterator);
+            } else {
+                if (timerIterator->triggerTime < newEarliest) {
+                    newEarliest = timerIterator->triggerTime;
+                }
             }
         }
-    }
-    earliestTriggerTime = newEarliest;
+        earliestTriggerTime = newEarliest;
 
-    if (ready != NULL) {
+        if (ready == NULL) {
+            break;
+        }
+
         // Remove the timer from the list (it can reschedule itself if
         // it wants).
         erase(activeTimers, *ready);
         ready->active = false;
         ready->handlerRunning = true;
-        epoch = ServerRpcPool<>::getCurrentEpoch();
 
         // Release the monitor lock while the timer handler runs; otherwise,
         // WorkerTimer::handleTimerEvent might hang on the lock for a long
         // time, effectively blocking the dispatch thread.
         {
             Unlock<std::mutex> unlock(mutex);
+            LogProtector::Guard logGuard(logProtectorActivity);
             ready->handleTimerEvent();
         }
-        epoch = ~0lu;
         ready->handlerRunning = false;
         ready->handlerFinished.notify_one();
     }

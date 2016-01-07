@@ -185,7 +185,7 @@ class Infiniband {
         explicit QueuePair(Infiniband& infiniband)
             : infiniband(infiniband), type(0), ctxt(NULL), ibPhysicalPort(-1),
             pd(NULL), srq(NULL), qp(NULL), txcq(NULL), rxcq(NULL),
-            initialPsn(-1), handshakeSin() {}
+            initialPsn(-1), handshakeSin(), peerLid(0) {}
         ~QueuePair();
         uint32_t    getInitialPsn() const;
         uint32_t    getLocalQpNumber() const;
@@ -212,6 +212,7 @@ class Infiniband {
         uint32_t     initialPsn;     // initial packet sequence number
         sockaddr_in  handshakeSin;   // UDP address of the remote end used to
                                      // handshake when using RC queue pairs.
+        uint16_t     peerLid;        // Lid of the other party.
         char         peerName[50];   // Optional name for the sender
                                      // (intended for use in error messages);
                                      // null-terminated.
@@ -301,11 +302,16 @@ class Infiniband {
         uint32_t        bytes;          // length of buffer in bytes
         uint32_t        messageBytes;   // byte length of message in the buffer
         ibv_mr *        mr;             // memory region of the buffer
+        uint16_t        remoteLid;      // Lid of peer; used in log messages.
+        bool            response;       // True means this is a response, false
+                                        // means this is a request.
 
         BufferDescriptor(char *buffer, uint32_t bytes, ibv_mr *mr)
-            : buffer(buffer), bytes(bytes), messageBytes(0), mr(mr) {}
+            : buffer(buffer), bytes(bytes), messageBytes(0), mr(mr),
+              remoteLid(0), response(false) {}
         BufferDescriptor()
-            : buffer(NULL), bytes(0), messageBytes(0), mr(NULL) {}
+            : buffer(NULL), bytes(0), messageBytes(0), mr(NULL),
+              remoteLid(0), response(false) {}
 
       private:
         DISALLOW_COPY_AND_ASSIGN(BufferDescriptor);

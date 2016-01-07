@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014 Stanford University
+/* Copyright (c) 2011-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -56,32 +56,31 @@ TEST(SpinLockTest, constructorDestructor_maintainLockTable) {
     EXPECT_EQ(0, SpinLock::numLocks() - startCount);
 }
 
-// Helper function that runs in a separate thread for the following test.
-static void blockingChild(SpinLock* lock, volatile bool* done)
+// Helper function that runs in a separate thread for some of the tests.
+static void blockingChild(SpinLock* lock)
 {
     lock->lock();
-    *done = true;
+    RAMCLOUD_TEST_LOG("Got lock");
 }
 
 TEST(SpinLockTest, threadBlocks) {
-    SpinLock lock;
-    volatile bool done;
+    TestLog::Enable logEnabler;
+    SpinLock lock("SpinLockTest");
+    lock.logWaits = true;
     lock.lock();
 
     // Make sure that the child thread waits for the lock to become
     // available.
-    std::thread thread(blockingChild, &lock, &done);
-    usleep(1000);
-    EXPECT_FALSE(done);
+    std::thread thread(blockingChild, &lock);
+    TestUtil::waitForLog();
+    EXPECT_EQ("lock: Waiting on SpinLock", TestLog::get());
 
     // Make sure that the child thread eventually completes once we
     // release the lock.
-    // See "Timing-Dependent Tests" in designNotes.
+    TestLog::reset();
     lock.unlock();
-    for (int i = 0; !done && i < 1000; i++) {
-        usleep(100);
-    }
-    EXPECT_TRUE(done);
+    TestUtil::waitForLog();
+    EXPECT_EQ("blockingChild: Got lock", TestLog::get());
     thread.join();
 }
 
@@ -103,9 +102,9 @@ static void contentionChild(SpinLock* lock, volatile bool* ready,
 
 TEST(SpinLockTest, contention) {
     // Create several threads contenting for a SpinLock to control access
-    //  to acritical section that increments a variable, and make sure that
+    // to a critical section that increments a variable, and make sure that
     // none of the increments get lost.
-    SpinLock lock;
+    SpinLock lock("SpinLockTest");
     volatile int value = 0;
     volatile bool ready = false;
     // Start child threads.
@@ -123,9 +122,42 @@ TEST(SpinLockTest, contention) {
     EXPECT_GT(lock.contendedTicks, 0U);
 }
 
+TEST(SpinLockTest, printWarning) {
+    TestLog::Enable logEnabler;
+    SpinLock lock("SpinLockTest");
+    lock.logWaits = true;
+    lock.lock();
+
+    // Take control of time.
+    uint64_t ticksPerSecond = Cycles::fromMicroseconds(1000001);
+    Cycles::mockTscValue = 1000;
+
+    // Wait for a thread to block on the lock.
+    std::thread thread(blockingChild, &lock);
+    TestUtil::waitForLog();
+    EXPECT_EQ("lock: Waiting on SpinLock", TestLog::get());
+
+    // Advance time, make sure that the thread prints a message.
+    TestLog::reset();
+    Cycles::mockTscValue += ticksPerSecond;
+    TestUtil::waitForLog();
+    EXPECT_EQ("lock: SpinLockTest SpinLock locked for one second; deadlock\?",
+            TestLog::get());
+    EXPECT_EQ(ticksPerSecond, lock.contendedTicks);
+
+    // Release the lock, make sure the thread acquires it.
+    TestLog::reset();
+    lock.unlock();
+    TestUtil::waitForLog();
+    EXPECT_EQ("blockingChild: Got lock", TestLog::get());
+
+    Cycles::mockTscValue = 0;
+    thread.join();
+}
+
 TEST(SpinLockTest, setName) {
-    SpinLock lock;
-    EXPECT_EQ("unnamed", lock.name);
+    SpinLock lock("initial");
+    EXPECT_EQ("initial", lock.name);
     lock.setName("John Paul Jones");
     EXPECT_EQ("John Paul Jones", lock.name);
 }

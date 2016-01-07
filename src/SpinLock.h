@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014 Stanford University
+/* Copyright (c) 2011-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -34,15 +34,20 @@ namespace RAMCloud {
  */
 class SpinLock {
   public:
-    SpinLock();
     explicit SpinLock(string name);
-    ~SpinLock();
+    virtual ~SpinLock();
     void lock();
     bool try_lock();
     void unlock();
     void setName(string name);
     static void getStatistics(ProtoBuf::SpinLockStatistics* stats);
     static int numLocks();
+
+    /*
+     * This class automatically acquires a SpinLock on construction and
+     * automatically releases it on destruction.
+     */
+    typedef std::lock_guard<SpinLock> Guard;
 
   PRIVATE:
     /// Implements the lock: 0 means free, anything else means locked.
@@ -63,6 +68,20 @@ class SpinLock {
     /// Count of the number of processor ticks spent waiting to acquire this
     /// lock due to it having already been held.
     uint64_t contendedTicks;
+
+    /// True means log when waiting for the lock; intended for unit tests only.
+    bool logWaits;
+};
+
+/**
+ * This class can be used to create unnamed SpinLocks; it's intended
+ * for use in array constructors. Making it a subclass has the advantage
+ * that programmers must explicitly request it (they can't accidentally
+ * forget to provide a name to SpinLock).
+ */
+class UnnamedSpinLock : public SpinLock {
+  public:
+    UnnamedSpinLock() : SpinLock("unnamed") {}
 };
 
 } // end RAMCloud

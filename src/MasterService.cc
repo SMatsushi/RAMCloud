@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2015 Stanford University
+/* Copyright (c) 2009-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -24,6 +24,7 @@
 #include "EnumerationIterator.h"
 #include "IndexKey.h"
 #include "LogIterator.h"
+#include "LogProtector.h"
 #include "MasterClient.h"
 #include "MasterService.h"
 #include "ObjectBuffer.h"
@@ -97,6 +98,7 @@ MasterService::MasterService(Context* context, const ServerConfig* config)
     , logEverSynced(false)
     , masterTableMetadata()
     , maxResponseRpcLen(Transport::MAX_RPC_LEN)
+    , migrationMonitor(this)
 {
     context->services[WireFormat::MASTER_SERVICE] = this;
 }
@@ -947,7 +949,7 @@ MasterService::migrateSingleLogEntry(
         entryKeyHash = record.getKeyHash();
     } else if (type == LOG_ENTRY_TYPE_TXPLIST) {
         ParticipantList participantList(buffer);
-        for (uint64_t i = 0; i < participantList.header.participantCount; ++i) {
+        for (uint64_t i = 0; i < participantList.getParticipantCount(); ++i) {
             entryTableId = participantList.participants[i].tableId;
             entryKeyHash = participantList.participants[i].keyHash;
             if (entryTableId != tableId)
@@ -1112,20 +1114,8 @@ MasterService::migrateTablet(const WireFormat::MigrateTablet::Request* reqHdr,
         tabletManager.changeState(tableId, firstKeyHash, lastKeyHash,
                 TabletManager::NORMAL, TabletManager::LOCKED_FOR_MIGRATION);
 
-        // Increment the current epoch and save the last epoch any
-        // currently running RPC could have been a part of
-        uint64_t epoch = ServerRpcPool<>::incrementCurrentEpoch() - 1;
-
         // Wait for the remainder of already running writes to finish.
-        while (true) {
-            uint64_t earliestEpoch =
-                ServerRpcPool<>::getEarliestOutstandingEpoch(context,
-                        Transport::ServerRpc::APPEND_ACTIVITY);
-            earliestEpoch = std::min(earliestEpoch,
-                        WorkerTimer::getEarliestOutstandingEpoch());
-            if (earliestEpoch > epoch)
-                break;
-        }
+        LogProtector::wait(context, Transport::ServerRpc::APPEND_ACTIVITY);
     }
 
     // Phase 3: finish iterating over the remaining log entries.
@@ -1596,6 +1586,7 @@ MasterService::prepForIndexletMigration(
 
     tabletManager.changeState(reqHdr->backingTableId, 0UL, ~0UL,
             TabletManager::NORMAL, TabletManager::RECOVERING);
+    migrationMonitor.migrationStarting(reqHdr->backingTableId, 0UL, ~0UL);
 }
 
 /**
@@ -1624,6 +1615,8 @@ MasterService::prepForMigration(
                 "\"??\"", reqHdr->firstKeyHash, reqHdr->lastKeyHash,
                 reqHdr->tableId);
         TableStats::addKeyHashRange(&masterTableMetadata, reqHdr->tableId,
+                reqHdr->firstKeyHash, reqHdr->lastKeyHash);
+        migrationMonitor.migrationStarting(reqHdr->tableId,
                 reqHdr->firstKeyHash, reqHdr->lastKeyHash);
     } else {
         TabletManager::Tablet tablet;
@@ -2292,20 +2285,8 @@ MasterService::splitAndMigrateIndexlet(
         indexletManager.truncateIndexlet(
                 tableId, indexId, splitKey, splitKeyLength);
 
-        // Increment the current epoch and save the last epoch any
-        // currently running RPC could have been a part of
-        uint64_t epoch = ServerRpcPool<>::incrementCurrentEpoch() - 1;
-
         // Wait for the remainder of already running writes to finish.
-        while (true) {
-            uint64_t earliestEpoch =
-                ServerRpcPool<>::getEarliestOutstandingEpoch(context,
-                        Transport::ServerRpc::APPEND_ACTIVITY);
-            earliestEpoch = std::min(earliestEpoch,
-                        WorkerTimer::getEarliestOutstandingEpoch());
-            if (earliestEpoch > epoch)
-                break;
-        }
+        LogProtector::wait(context, Transport::ServerRpc::APPEND_ACTIVITY);
     }
 
     // Phase 3: finish iterating over the remaining log entries.
@@ -2535,7 +2516,7 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
                 return;
             }
 
-            uint64_t opPtr = preparedOps.peekOp(reqHdr->leaseId,
+            uint64_t opPtr = preparedOps.getOp(reqHdr->leaseId,
                                                    participants[i].rpcId);
 
             // Skip if object is not prepared since it is already committed.
@@ -2556,7 +2537,7 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
                 objectManager.commitWrite(op, opRef);
             }
 
-            preparedOps.popOp(reqHdr->leaseId,
+            preparedOps.removeOp(reqHdr->leaseId,
                                  participants[i].rpcId);
         }
     } else if (reqHdr->decision == WireFormat::TxDecision::ABORT) {
@@ -2571,7 +2552,7 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
                 return;
             }
 
-            uint64_t opPtr = preparedOps.peekOp(reqHdr->leaseId,
+            uint64_t opPtr = preparedOps.getOp(reqHdr->leaseId,
                                                 participants[i].rpcId);
 
             // Skip if object is not prepared since it is already committed
@@ -2587,7 +2568,7 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
 
             objectManager.commitRead(op, opRef);
 
-            preparedOps.popOp(reqHdr->leaseId,
+            preparedOps.removeOp(reqHdr->leaseId,
                               participants[i].rpcId);
         }
     } else {
@@ -3008,7 +2989,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
             respHdr->common.status == STATUS_OK &&
             respHdr->vote == WireFormat::TxPrepare::PREPARED) {
         for (uint32_t i = 0; i < participantCount; ++i) {
-            uint64_t opPtr = preparedOps.peekOp(reqHdr->lease.leaseId,
+            uint64_t opPtr = preparedOps.getOp(reqHdr->lease.leaseId,
                                                    participants[i].rpcId);
 
             // Skip if object is not prepared since it is already committed.
@@ -3041,7 +3022,7 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
                 return;
             }
 
-            preparedOps.popOp(reqHdr->lease.leaseId,
+            preparedOps.removeOp(reqHdr->lease.leaseId,
                                  participants[i].rpcId);
         }
         respHdr->vote = WireFormat::TxPrepare::COMMITTED;
@@ -3137,6 +3118,95 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
             requestRemoveIndexEntries(oldObject);
         }
     }
+}
+
+///////////////////////////////////////////////////////////////////////////////
+/////Migration support code.                                              /////
+///////////////////////////////////////////////////////////////////////////////
+
+/**
+ * Constructor for MigrationMonitor objects.
+ * \param owner
+ *      The MasterService that controls/uses this object.
+ */
+MasterService::MigrationMonitor::MigrationMonitor(MasterService* owner)
+        : WorkerTimer(owner->context->dispatch)
+        , owner(owner)
+        , mutex("MigrationMonitor")
+        , incomingMigrations()
+        , protector()
+        , wakeupInterval(Cycles::fromSeconds(1.0))
+        , startTime()
+{
+}
+
+/**
+ * This method is invoked whenever an inbound migration starts (i.e.
+ * we prepare to accept tablet data from another server). It arranges for
+ * that migration to be monitored appropriately.
+ * \param tableId
+ *      Identifier for the table containing the tablet that is incoming.
+ * \param startKeyHash
+ *      Lowest key hash that will be contained in the incoming tablet.
+ * \param endKeyHash
+ *      Highest key hash that will be contained in the incoming tablet
+ */
+void
+MasterService::MigrationMonitor::migrationStarting(uint64_t tableId,
+        uint64_t startKeyHash, uint64_t endKeyHash)
+{
+    SpinLock::Guard guard(mutex);
+    incomingMigrations.emplace_back(tableId, startKeyHash, endKeyHash);
+    if (!protector) {
+        protector.construct(&owner->objectManager);
+    }
+    if (!isRunning()) {
+        startTime = Cycles::rdtsc();
+        start(startTime + wakeupInterval);
+    }
+}
+
+/**
+ * This method is invoked at regular intervals by WorkerTimer whenever
+ * there is at least one migration running. It releases the
+ * TombstoneProtector when all of the migrations finish, and it prints
+ * warning messages if migrations take too long to finish.
+ */
+void
+MasterService::MigrationMonitor::handleTimerEvent()
+{
+    SpinLock::Guard guard(mutex);
+
+    // Delete information for any migrations that have completed.
+    // Immigration is considered to have finished when its tablet
+    // state becomes NORMAL, or if the tablet ceases to exist.
+    std::vector<TabletId>::iterator it = incomingMigrations.begin();
+    while (it != incomingMigrations.end()) {
+        TabletId* id = &(*it);
+        TabletManager::Tablet tabletInfo;
+        bool found = owner->tabletManager.getTablet(id->tableId,
+                id->startKeyHash, id->endKeyHash, &tabletInfo);
+        if (!found || tabletInfo.state == TabletManager::TabletState::NORMAL) {
+            it = incomingMigrations.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    // See if all of the migrations have completed.
+    if (incomingMigrations.empty()) {
+        protector.destroy();
+        return;
+    }
+
+    uint64_t now = Cycles::rdtsc();
+    double elapsed = Cycles::toSeconds(now - startTime);
+    if (elapsed > 30.0) {
+        LOG(WARNING, "Inbound migrations have been running continuously "
+                "for %.0f seconds; is it possible that something is hung?",
+                elapsed);
+    }
+    start(Cycles::rdtsc() + wakeupInterval);
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -3321,6 +3391,7 @@ MasterService::recover(uint64_t recoveryId, ServerId masterId,
      * skipped entry is marked OK and notStarted is advanced (if
      * possible).
      */
+    ObjectManager::TombstoneProtector p(&objectManager);
     uint64_t usefulTime = 0;
     uint64_t start = Cycles::rdtsc();
     LOG(NOTICE, "Recovering master %s, partition %lu, %lu replicas available",
@@ -3485,8 +3556,10 @@ MasterService::recover(uint64_t recoveryId, ServerId masterId,
                 task->replica.state = Replica::State::FAILED;
                 runningSet.erase(task->replica.segmentId);
             } catch (const ServerNotUpException& e) {
-                LOG(WARNING, "No record of backup %s, trying next backup",
-                        task->replica.backupId.toString().c_str());
+                LOG(WARNING, "Backup %s no longer in cluster, trying next "
+                        "backup for segment %lu",
+                        task->replica.backupId.toString().c_str(),
+                        task->replica.segmentId);
                 task->replica.state = Replica::State::FAILED;
                 runningSet.erase(task->replica.segmentId);
             } catch (const ClientException& e) {
@@ -3712,6 +3785,12 @@ MasterService::recover(const WireFormat::Recover::Request* reqHdr,
         // Recovery wasn't successful.
     } catch (const OutOfSpaceException& e) {
         // Recovery wasn't successful.
+    } catch (const Exception& e) {
+        LOG(ERROR, "Unexpected exception during recovery: %s",
+                e.message.c_str());
+    } catch (const ClientException& e) {
+        LOG(ERROR, "Unexpected ClientException during recovery: %s",
+                statusToString(e.status));
     }
 
     // Once the coordinator and the recovery master agree that the

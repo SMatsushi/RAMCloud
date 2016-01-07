@@ -313,7 +313,6 @@ TEST_P(SegmentTest, getEntry_byReference) {
     Segment& s = *segAndAlloc.segment;
     Segment::Reference ref;
     s.append(LOG_ENTRY_TYPE_OBJ, "this is only a test!", 21, &ref);
-
     Buffer buffer;
     EXPECT_EQ(LOG_ENTRY_TYPE_OBJ, s.getEntry(ref, &buffer));
     EXPECT_EQ(21U, buffer.size());

@@ -24,6 +24,7 @@
 #include "SpinLock.h"
 #include "WireFormat.h"
 #include "WorkerTimer.h"
+#include "MasterClient.h"
 
 namespace RAMCloud {
 
@@ -257,8 +258,34 @@ class ParticipantList {
 
     bool checkIntegrity();
     uint32_t computeChecksum();
-    TransactionId getTransactionId();
 
+    /// Return the unique identifier for this transaction and participant list.
+    TransactionId getTransactionId()
+    {
+        return TransactionId(header.clientLeaseId, header.clientTransactionId);
+    }
+
+    /// Return the number for participants in this list.
+    uint32_t getParticipantCount()
+    {
+        return header.participantCount;
+    }
+
+    /// Return the tableId that identifies the target recovery manager.
+    uint64_t getTableId()
+    {
+        assert(header.participantCount > 0);
+        return participants[0].tableId;
+    }
+
+    /// Return the keyHash that identifies the target recovery manager.
+    uint64_t getKeyHash()
+    {
+        assert(header.participantCount > 0);
+        return participants[0].keyHash;
+    }
+
+  PRIVATE:
     /**
      * This data structure defines the format of a preparedOp header stored in a
      * master server's log.
@@ -299,6 +326,7 @@ class ParticipantList {
     /// Copy of the PreparedOp header.
     Header header;
 
+  PUBLIC:
     /// Pointer to the array of #WireFormat::TxParticipant containing the
     /// tableId, keyHash, and rpcId of every operations in this transactions.
     /// The actual data reside in RPC payload or in log. This pointer should not
@@ -319,8 +347,8 @@ class PreparedOps {
 
     void bufferOp(uint64_t leaseId, uint64_t rpcId, uint64_t newOpPtr,
                      bool inRecovery = false);
-    uint64_t popOp(uint64_t leaseId, uint64_t rpcId);
-    uint64_t peekOp(uint64_t leaseId, uint64_t rpcId);
+    void removeOp(uint64_t leaseId, uint64_t rpcId);
+    uint64_t getOp(uint64_t leaseId, uint64_t rpcId);
     void updatePtr(uint64_t leaseId, uint64_t rpcId, uint64_t newOpPtr);
 
     void markDeleted(uint64_t leaseId, uint64_t rpcId);
@@ -345,7 +373,9 @@ class PreparedOps {
         PreparedItem(Context* context, uint64_t newOpPtr)
             : WorkerTimer(context->dispatch)
             , context(context)
-            , newOpPtr(newOpPtr) {}
+            , newOpPtr(newOpPtr)
+            , txHintFailedRpc()
+        {}
 
         /**
          * Default destructor. Stops WorkerTimer and waits for running handler
@@ -365,6 +395,10 @@ class PreparedOps {
         /// Log reference to PreparedOp in the log.
         uint64_t newOpPtr;
 
+        /// TxHintFailed RPC to be issued asynchronously if the transaction does
+        /// not complete within TX_TIMEOUT_US
+        Tub<TxHintFailedRpc> txHintFailedRpc;
+
         /// Timeout value for the active PreparedOp (lock record).
         /// This timeout should be larger than 2*RTT to give enough time for
         /// a client to complete transaction.
@@ -373,7 +407,7 @@ class PreparedOps {
         /// However, using small timeout must be carefully chosen since large
         /// server span of a transaction increases the time gap between the
         /// first phase and the second phase of a transaction.
-        static const uint64_t TX_TIMEOUT_US = 500;
+        static const uint64_t TX_TIMEOUT_US = 50000;
       private:
         DISALLOW_COPY_AND_ASSIGN(PreparedItem);
     };

@@ -255,6 +255,7 @@ InfRcTransport::InfRcTransport(Context* context,
     //  protection domain, create shared receive queue, register buffers.
 
     lid = infiniband->getLid(ibPhysicalPort);
+    LOG(NOTICE, "Local Infiniband lid is %u", lid);
 
     // create two shared receive queues. all client queue pairs use one and all
     // server queue pairs use the other. we post receive buffer work requests
@@ -324,6 +325,16 @@ InfRcTransport::~InfRcTransport()
         close(serverSetupSocket);
     if (clientSetupSocket != -1)
         close(clientSetupSocket);
+    while (!clientSendQueue.empty()) {
+        ClientRpc& rpc = *clientSendQueue.begin();
+        erase(clientSendQueue, rpc);
+        clientRpcPool.destroy(&rpc);
+    }
+    while (!outstandingRpcs.empty()) {
+        ClientRpc& rpc = *outstandingRpcs.begin();
+        erase(outstandingRpcs, rpc);
+        clientRpcPool.destroy(&rpc);
+    }
 }
 
 void
@@ -440,12 +451,27 @@ InfRcTransport::InfRcSession::cancelRequest(
     }
     foreach (ClientRpc& rpc, transport->outstandingRpcs) {
         if (rpc.notifier == notifier) {
-
-            // Wait until NIC completes all ongoing transmits. This will
-            // guarantee that we don't send garbaged rpc if NIC has already
-            // started DMA transmit of data from the rpc that we want to cancel.
+            // At this point we'd like to delay until the NIC completes all
+            // ongoing transmits. Otherwise, if a buffer gets reused after we
+            // return, then the NIC could transmit garbage. However, as of
+            // 12/2015 this can cause delays as long as 4 seconds (long
+            // timeouts in the NIC if the target died?), which locks the
+            // dispatch thread and causes this machine to be presumed dead.
+            // So, try to wait for completion, but give up after 1ms if it
+            // doesn't complete.
+            uint64_t start = Cycles::rdtsc();
             while (transport->freeTxBuffers.size() != MAX_TX_QUEUE_DEPTH) {
                 transport->reapTxBuffers();
+                // Must invoke the poller to process incoming requests,
+                // in order to handle occasional situations where all of the
+                // transmit buffers are in use for messages coming to
+                // ourself.
+                transport->poller.poll();
+                if (Cycles::toSeconds(Cycles::rdtsc() - start) > 1e-03) {
+                    RAMCLOUD_CLOG(NOTICE, "gave up waiting for all outstanding "
+                            "transmissions after 1ms");
+                    break;
+                }
             }
             erase(transport->outstandingRpcs, rpc);
             transport->clientRpcPool.destroy(&rpc);
@@ -841,7 +867,7 @@ InfRcTransport::postSrqReceiveAndKickTransmit(ibv_srq* srq,
             double waitTime = Cycles::toSeconds(Cycles::rdtsc()
                     - rpc.waitStart);
             if (waitTime > 1e-03) {
-                LOG(WARNING, "Outgoing %s RPC delayed for %.2f ms because "
+                LOG(DEBUG, "Outgoing %s RPC delayed for %.2f ms because "
                         "of insufficient receive buffers",
                         WireFormat::opcodeSymbol(rpc.request),
                         waitTime*1e03);
@@ -874,12 +900,39 @@ InfRcTransport::getTransmitBuffer()
             // time could indicate deadlock); in the normal case this code
             // is not invoked.
             uint64_t start = Cycles::rdtsc();
-            while (freeTxBuffers.empty())
+            uint64_t oneSecond = Cycles::fromSeconds(1.0);
+            uint64_t nextLog = start + oneSecond;
+            bool printDetails = true;
+            while (freeTxBuffers.empty()) {
+                // Give the poller a chance to execute. Otherwise, it's
+                // possible for us to deadlock with all transmit buffers
+                // in use sending messages to ourself.
+                poller.poll();
                 reapTxBuffers();
+                uint64_t now = Cycles::rdtsc();
+                if (now > nextLog) {
+                    LOG(WARNING, "Transmit buffers unavailable for %.1f "
+                            "seconds; deadlock or target crashed?",
+                            Cycles::toSeconds(now-start));
+                    nextLog += oneSecond;
+                    // The first time this message is printed, log all of
+                    // the target addresses still outstanding.
+                    if (printDetails) {
+                        foreach (auto& bd, *txBuffers) {
+                            LOG(NOTICE, "Transmit buffer with %u bytes "
+                                    "pending for lid %u, opcode %s",
+                                    bd.messageBytes, bd.remoteLid,
+                                    getOpcodeFromBuffer(&bd));
+                        }
+                        printDetails = false;
+                    }
+                }
+            }
             double waitMs = 1e03 * Cycles::toSeconds(Cycles::rdtsc() - start);
             if (waitMs > 5.0)  {
                 LOG(WARNING, "Long delay waiting for transmit buffers "
-                        "(%.1f ms); deadlock or target crashed?", waitMs);
+                        "(%.1f ms elapsed, %lu buffers now free); deadlock "
+                        "or target crashed?", waitMs, freeTxBuffers.size());
             }
         }
     }
@@ -906,15 +959,16 @@ InfRcTransport::reapTxBuffers()
 
     for (int i = 0; i < n; i++) {
         BufferDescriptor* bd =
-            reinterpret_cast<BufferDescriptor*>(retArray[i].wr_id);
+                reinterpret_cast<BufferDescriptor*>(retArray[i].wr_id);
         pendingOutputBytes -= bd->messageBytes;
-        freeTxBuffers.push_back(bd);
-
         if (retArray[i].status != IBV_WC_SUCCESS) {
-            LOG(ERROR, "Transmit failed for buffer %lu: %s",
-                reinterpret_cast<uint64_t>(bd),
-                infiniband->wcStatusToString(retArray[i].status));
+            LOG(ERROR, "Transmit failed for buffer %lu: destination "
+                    "lid %u, status %s, opcode %s",
+                    reinterpret_cast<uint64_t>(bd), bd->remoteLid,
+                    infiniband->wcStatusToString(retArray[i].status),
+                    getOpcodeFromBuffer(bd));
         }
+        freeTxBuffers.push_back(bd);
     }
 
     // Has TX just transitioned to idle?
@@ -942,6 +996,24 @@ InfRcTransport::getMaxRpcSize() const
     return MAX_RPC_LEN;
 }
 
+/**
+ * Given an Infiniband buffer, extract the RPC request opcode from it
+ * and return it in symbolic form. If the buffer doesn't refer to a request,
+ * the return value is "response".
+ */
+const char*
+InfRcTransport::getOpcodeFromBuffer(BufferDescriptor* bd)
+{
+    if (bd->response) {
+        return "response";
+    }
+    // The buffer consists of a nonce followed by a request header.
+    WireFormat::RequestCommon* header =
+            reinterpret_cast<WireFormat::RequestCommon*>(
+            bd->buffer + sizeof(uint64_t));
+    return WireFormat::opcodeSymbol(header->opcode);
+}
+
 string
 InfRcTransport::getServiceLocator()
 {
@@ -962,9 +1034,13 @@ InfRcTransport::getServiceLocator()
  *      to the endpoint listening on #session.
  * \param qp
  *      Queue pair on which to transmit the message.
+ * \param response
+ *      True means this is a response message, false means request.
+ *      Used only for printing diagnostic messages.
  */
 void
-InfRcTransport::sendZeroCopy(uint64_t nonce, Buffer* message, QueuePair* qp)
+InfRcTransport::sendZeroCopy(uint64_t nonce, Buffer* message, QueuePair* qp,
+        bool response)
 {
     const bool allowZeroCopy = true;
     uint32_t lastChunkIndex = message->getNumberChunks() - 1;
@@ -974,6 +1050,8 @@ InfRcTransport::sendZeroCopy(uint64_t nonce, Buffer* message, QueuePair* qp)
     uint32_t sgesUsed = 0;
     BufferDescriptor* bd = getTransmitBuffer();
     bd->messageBytes = message->size();
+    bd->remoteLid = qp->getRemoteLid();
+    bd->response = response;
 
     // The variables below allow us to collect several chunks from the
     // Buffer into a single sge in some situations. They describe a
@@ -1150,7 +1228,7 @@ InfRcTransport::ServerRpc::sendReply()
                     t->getMaxRpcSize()));
     }
 
-    t->sendZeroCopy(nonce, &replyPayload, qp);
+    t->sendZeroCopy(nonce, &replyPayload, qp, true);
     interval.stop();
 
     // Restart port watchdog for this server port
@@ -1235,7 +1313,7 @@ InfRcTransport::ClientRpc::sendOrQueue()
         ++metrics->transport.transmit.messageCount;
         ++metrics->transport.transmit.packetCount;
 
-        t->sendZeroCopy(nonce, request, session->qp);
+        t->sendZeroCopy(nonce, request, session->qp, false);
 
         t->outstandingRpcs.push_back(*this);
         session->sessionAlarm.rpcStarted();
@@ -1329,7 +1407,7 @@ InfRcTransport::Poller::poll()
             // we're "using" it right now) right before posting it back.
             t->numUsedClientSrqBuffers++;
             t->postSrqReceiveAndKickTransmit(t->clientSrq, bd);
-            LOG(NOTICE, "incoming data doesn't match active RPC "
+            RAMCLOUD_CLOG(NOTICE, "incoming data doesn't match active RPC "
                 "(nonce 0x%016lx); perhaps RPC was cancelled?",
                 header.nonce);
 

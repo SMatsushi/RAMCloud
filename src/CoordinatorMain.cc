@@ -17,6 +17,7 @@
 #include "ShortMacros.h"
 #include "CoordinatorService.h"
 #include "ExternalStorage.h"
+#include "MemoryMonitor.h"
 #include "MockExternalStorage.h"
 #include "OptionParser.h"
 #include "PingService.h"
@@ -95,6 +96,7 @@ main(int argc, char *argv[])
             args.append(argv[i]);
         }
         LOG(NOTICE, "Command line: %s", args.c_str());
+        LOG(NOTICE, "Coordinator process id: %u", getpid());
 
         context.workerManager = new WorkerManager(&context, maxCores-1);
 
@@ -139,6 +141,7 @@ main(int argc, char *argv[])
         context.externalStorage->setWorkspace(workspace.c_str());
         context.externalStorage->becomeLeader("coordinator", localLocator);
 
+        MemoryMonitor monitor(context.dispatch, 1.0, 10);
         CoordinatorService coordinatorService(&context,
                                               deadServerTimeout,
                                               false,

@@ -121,8 +121,19 @@ SingleFileStorage::Frame::schedule(Priority priority)
  *      Lock on the storage mutex which must be held before calling.
  *      Not actually used; just here to sanity check locking.
  * \param priority
- *      Priority of this task versus others. Reads are performed with
- *      NORMAL priority; writes are performed with LOW priority.
+ *      Priority of this task versus others. Reads (which are executed
+ *      only as part of crash recovery) are performed with NORMAL
+ *      priority. Writes to open replicas are performed with
+ *      LOW priority (i.e., do if time permits, but reads are higher
+ *      priority). Once a replica is closed, then its (final) write
+ *      executes at HIGH priority. This is needed to avoid stalling
+ *      crash recovery. In the past, all writes were at LOW priority,
+ *      but this could cause dirty replicas to accumulate while
+ *      reading segments for recovery. Eventually, maxWriteBuffers
+ *      gets exceeded in the entire cluster, so masters cannot open
+ *      new write segments, which stalls segment replay and causes
+ *      many bad things to happen.  Thus, once a replica is full we
+ *      need to get it to secondary storage ASAP.
  */
 void
 SingleFileStorage::Frame::schedule(Lock& lock, Priority priority)
@@ -386,6 +397,12 @@ SingleFileStorage::Frame::close()
                 isWriteBuffer = false;
             }
         }
+    } else {
+        // This frame was already scheduled for I/O previously, but
+        // at low priority. Now that it's closed, raise the priority
+        // so it gets to secondary storage quickly and we can free its
+        // buffer in memory.
+        schedule(lock, HIGH);
     }
 }
 
@@ -564,8 +581,8 @@ SingleFileStorage::unlockedWrite(Frame::Lock& lock, void* buf, size_t count,
             strerror(errno), offset, count);
     } else if (r != downCast<ssize_t>(count)) {
         DIE("Unexpectedly short write to replica, starting offset in "
-            "file %lu, length %lu",
-             offset, count);
+            "file %lu, length %lu, result %lu",
+             offset, count, r);
     }
     r = pwrite(fd, metadataBuf, metadataCount, metadataOffset);
     PerfStats::threadStats.backupWriteActiveCycles += writeTicks.stop();

@@ -67,12 +67,12 @@ static_assert(unsafeArrayLength(logModuleNames) == NUM_LOG_MODULES,
 Logger::Logger(LogLevel level)
     : fd(2)
     , mustCloseFd(false)
-    , mutex()
+    , mutex("Logger::mutex")
     , collapseMap()
     , collapseIntervalMs(DEFAULT_COLLAPSE_INTERVAL)
     , maxCollapseMapSize(DEFAULT_COLLAPSE_MAP_LIMIT)
     , nextCleanTime({0, 0})
-    , bufferMutex()
+    , bufferMutex("Logger::bufferMutex")
     , logDataAvailable()
     , bufferSize(1000000)
     , messageBuffer()
@@ -530,7 +530,10 @@ Logger::logMessage(bool collapse, LogModule module, LogLevel level,
         // collapsible message (either it's new or  we haven't printed it in
         // a while). Save information so we don't print this message again
         // for a while.
-        skip->message.assign(buffer, charsWritten);
+        if (skip->message.empty()) {
+            skip->message.assign(buffer, charsWritten);
+        }
+        skip->skipCount = 0;
         skip->nextPrintTime = Util::timespecAdd(now,
                 {collapseIntervalMs/1000,
                 (collapseIntervalMs%1000)*1000000});
@@ -607,7 +610,7 @@ Logger::cleanCollapseMap(struct timespec now)
             string newMessage = format("%010lu.%09lu", now.tv_sec, now.tv_nsec)
                     + skip->message.substr(20, i+2-20)
                     + format(" (%d duplicates of this message were skipped)",
-                    skip->skipCount-1)
+                    skip->skipCount)
                     + skip->message.substr(i+2);
             if (addToBuffer(newMessage.c_str(),
                     downCast<int>(newMessage.size()))) {
@@ -793,18 +796,8 @@ void
 Logger::assertionError(const char *assertion, const char *file,
                        unsigned int line, const char *function)
 {
-    Lock lock(mutex);
-    struct timespec now;
-    clock_gettime(CLOCK_REALTIME, &now);
-
-    // Compute the body of the log message except for the initial timestamp
-    char buffer[strlen(assertion) + 500];
-    int count = snprintf(buffer, sizeof(buffer),
-            "%010lu.%09lu %s:%d in %s %s[%d]: Assertion `%s' failed.\n",
-            now.tv_sec, now.tv_nsec, file, line, function,
-            logLevelNames[ERROR], ThreadId::get(), assertion);
-    addToBuffer(buffer, count);
-    sync();
+    DIE("Assertion `%s' failed at %s:%u in %s",
+            assertion, file, line, function);
 }
 
 /**
@@ -906,5 +899,5 @@ __assert_fail(const char *assertion, const char *file, unsigned int line,
         const char *function)
 {
     RAMCloud::Logger::get().assertionError(assertion, file, line, function);
-    abort();
+    abort();             // To keep the compiler happy; never gets executed.
 }

@@ -317,8 +317,9 @@ TEST_F(BackupMasterRecoveryTest, free) {
     EXPECT_EQ("free: Recovery 456 for crashed master 99.0 is no longer needed; "
               "will clean up as next possible chance. | "
               "schedule: scheduled | "
-              "performTask: State for recovery 456 for crashed master 99.0 "
-              "freed on backup", TestLog::get());
+              "performTask: Freeing recovery state on backup for crashed "
+              "master 99.0 (recovery 456), including 0 filtered replicas",
+              TestLog::get());
 }
 
 TEST_F(BackupMasterRecoveryTest, performTask) {
@@ -338,7 +339,8 @@ TEST_F(BackupMasterRecoveryTest, performTask) {
         TestLog::get());
     TestLog::reset();
     taskQueue.performTask();
-    EXPECT_EQ("performTask: Took 0 ms to filter 1 segments", TestLog::get());
+    EXPECT_EQ("performTask: Took 0 ms to filter 1 primary replicas",
+        TestLog::get());
 }
 
 namespace {

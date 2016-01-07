@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2014 Stanford University
+/* Copyright (c) 2010-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -513,8 +513,31 @@ TestUtil::readFile(const char* path)
             result.append(buffer, count);
         }
     }
+    fclose(f);
     return result;
 }
 
+/**
+ * Waits for the TestLog to become nonempty, but gives up if a long time
+ * goes by without this happening.
+ *
+ * \param substring
+ *      If specified, the method won't return until the test log
+ *      contains this particular substring.
+ */
+void
+TestUtil::waitForLog(const char* substring)
+{
+    // See "Timing-Dependent Tests" in designNotes.
+    for (int i = 0; i < 10000; i++) {
+        if (!TestLog::get().empty()) {
+            if ((substring == NULL) ||
+                    (TestLog::get().find(substring) != std::string::npos)) {
+                return;
+            }
+        }
+        usleep(100);
+    }
+}
 
 } // namespace RAMCloud

@@ -23,6 +23,7 @@
 #include "EnumerationIterator.h"
 #include "LogIterator.h"
 #include "LogMetadata.h"
+#include "LogProtector.h"
 #include "MasterClient.h"
 #include "MasterService.h"
 #include "Memory.h"
@@ -1309,9 +1310,9 @@ TEST_F(MasterServiceTest, migrateTablet_movingData) {
     // other yet and can't perform a migrate.
     TestLog::Enable _("migrateTablet", "deleteKeyHashRange", NULL);
 
-    uint64_t oldEpcoh = ServerRpcPool<>::getCurrentEpoch();
+    uint64_t oldEpcoh = LogProtector::getCurrentEpoch();
     ramcloud->migrateTablet(tbl, 0, -1, master2->serverId);
-    EXPECT_GT(ServerRpcPool<>::getCurrentEpoch(), oldEpcoh);
+    EXPECT_GT(LogProtector::getCurrentEpoch(), oldEpcoh);
     EXPECT_EQ("migrateTablet: Migrating tablet [0x0,0xffffffffffffffff] "
             "in tableId 1 to server 3.0 at mock:host=master2 | "
             "migrateTablet: Sending last migration segment | "
@@ -1806,7 +1807,7 @@ TEST_F(MasterServiceTest, prepForIndexletMigration) {
     EXPECT_EQ("prepForIndexletMigration: Ready to receive indexlet "
             "in indexId 1 for tableId 1", TestLog::get());
 
-    SpinLock indexMutex;
+    SpinLock indexMutex("MasterServiceTest");
     IndexletManager::Lock indexLock(indexMutex);
     IndexletManager::IndexletMap::iterator it =
             service->indexletManager.getIndexlet(
@@ -3952,6 +3953,81 @@ TEST_F(MasterServiceFullSegmentSizeTest, write_maximumObjectSize) {
     delete[] key;
 }
 
+TEST_F(MasterServiceTest, MigrationMonitor_basics) {
+    Cycles::mockTscValue = 1000;
+    service->migrationMonitor.migrationStarting(1, 0, ~0ul);
+    Cycles::mockTscValue = 2000;
+    service->migrationMonitor.migrationStarting(2, 100, 200);
+    service->migrationMonitor.migrationStarting(2, 300, 400);
+    service->migrationMonitor.migrationStarting(3, 0, 1000);
+    EXPECT_TRUE(service->migrationMonitor.protector);
+    EXPECT_TRUE(service->migrationMonitor.isRunning());
+    EXPECT_EQ(1000ul, service->migrationMonitor.startTime);
+    EXPECT_EQ(4ul, service->migrationMonitor.incomingMigrations.size());
+    service->migrationMonitor.stop();
+    service->migrationMonitor.handleTimerEvent();
+    EXPECT_FALSE(service->migrationMonitor.protector);
+    EXPECT_FALSE(service->migrationMonitor.isRunning());
+    EXPECT_EQ(0ul, service->migrationMonitor.incomingMigrations.size());
+    Cycles::mockTscValue = 0;
+}
+
+TEST_F(MasterServiceTest, MigrationMonitor_migrationRunsTooLong) {
+    Cycles::mockTscValue = 1000;
+    service->migrationMonitor.migrationStarting(1, 0, ~0ul);
+    Cycles::mockTscValue = 2000;
+    service->migrationMonitor.migrationStarting(2, 100, 200);
+    service->migrationMonitor.migrationStarting(2, 300, 400);
+    service->migrationMonitor.migrationStarting(3, 0, 1000);
+    EXPECT_TRUE(service->migrationMonitor.protector);
+    EXPECT_TRUE(service->migrationMonitor.isRunning());
+    EXPECT_EQ(1000ul, service->migrationMonitor.startTime);
+    EXPECT_EQ(4ul, service->migrationMonitor.incomingMigrations.size());
+    service->migrationMonitor.stop();
+    service->migrationMonitor.handleTimerEvent();
+    EXPECT_FALSE(service->migrationMonitor.protector);
+    EXPECT_FALSE(service->migrationMonitor.isRunning());
+    EXPECT_EQ(0ul, service->migrationMonitor.incomingMigrations.size());
+    Cycles::mockTscValue = 0;
+}
+
+TEST_F(MasterServiceTest, MigrationMonitor_longRunningMigration) {
+    Cycles::mockTscValue = 1000;
+    service->tabletManager.addTablet(2, 100, 200, TabletManager::RECOVERING);
+    service->migrationMonitor.migrationStarting(2, 100, 200);
+
+    // First invocation of handleTimerEvent: time limit not yet exceeded.
+    service->migrationMonitor.stop();
+    Cycles::mockTscValue = Cycles::fromSeconds(2.0);
+    service->migrationMonitor.handleTimerEvent();
+    EXPECT_TRUE(service->migrationMonitor.protector);
+    EXPECT_TRUE(service->migrationMonitor.isRunning());
+    EXPECT_EQ(1ul, service->migrationMonitor.incomingMigrations.size());
+
+    // Second invocation of handleTimerEvent: time limit exceeded.
+    service->migrationMonitor.stop();
+    Cycles::mockTscValue = Cycles::fromSeconds(30.0) + 2000;
+    TestLog::reset();
+    service->migrationMonitor.handleTimerEvent();
+    EXPECT_TRUE(service->migrationMonitor.protector);
+    EXPECT_TRUE(service->migrationMonitor.isRunning());
+    EXPECT_EQ(1ul, service->migrationMonitor.incomingMigrations.size());
+    EXPECT_EQ("handleTimerEvent: Inbound migrations have been running "
+            "continuously for 30 seconds; is it possible that something "
+            "is hung\?", TestLog::get());
+
+    // Third invocation of handleTimerEvent: migration completed.
+    service->tabletManager.changeState(2, 100, 200, TabletManager::RECOVERING,
+            TabletManager::NORMAL);
+    service->migrationMonitor.stop();
+    service->migrationMonitor.handleTimerEvent();
+    EXPECT_FALSE(service->migrationMonitor.protector);
+    EXPECT_FALSE(service->migrationMonitor.isRunning());
+    EXPECT_EQ(0ul, service->migrationMonitor.incomingMigrations.size());
+
+    Cycles::mockTscValue = 0;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 /////Recovery related tests. This should eventually move into its own file.////
 ///////////////////////////////////////////////////////////////////////////////
@@ -4270,7 +4346,8 @@ TEST_F(MasterServiceTest, recover) {
             TestLog::get()));
     // 5) Checks bad locators for initial RPCs are handled
     EXPECT_TRUE(TestUtil::matchesPosixRegex(
-            "recover: No record of backup 1003.0, trying next backup",
+            "recover: Backup 1003.0 no longer in cluster, trying next "
+            "backup for segment 90",
             TestLog::get()));
     EXPECT_EQ(State::FAILED, replicas.at(5).state);
     EXPECT_TRUE(TestUtil::matchesPosixRegex(
@@ -4286,7 +4363,8 @@ TEST_F(MasterServiceTest, recover) {
             TestLog::get()));
     // 5) Checks bad locators for non-initial RPCs are handled
     EXPECT_TRUE(TestUtil::matchesPosixRegex(
-            "recover: No record of backup 1004.0, trying next backup",
+            "recover: Backup 1004.0 no longer in cluster, trying next "
+            "backup for segment 92",
             TestLog::get()));
     EXPECT_EQ(State::FAILED, replicas.at(7).state);
     EXPECT_TRUE(TestUtil::matchesPosixRegex(

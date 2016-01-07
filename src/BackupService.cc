@@ -1,4 +1,4 @@
-/* Copyright (c) 2009-2015 Stanford University
+/* Copyright (c) 2009-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -57,7 +57,6 @@ BackupService::BackupService(Context* context,
     , testingSkipCallerIdCheck(false)
     , taskQueue()
     , oldReplicas(0)
-    , lastLogTime(0)
 {
     context->services[WireFormat::BACKUP_SERVICE] = this;
     if (config->backup.inMemory) {
@@ -178,6 +177,7 @@ void
 BackupService::dispatch(WireFormat::Opcode opcode, Rpc* rpc)
 {
     Lock _(mutex); // Lock out GC while any RPC is being processed.
+                   // Also, prevent races between RPCs.
 
     // This is a hack. We allow the AssignGroup Rpc to be processed before
     // initCalled is set to true, since it is sent during initialization.
@@ -346,8 +346,26 @@ BackupService::recoveryComplete(
         WireFormat::BackupRecoveryComplete::Response* respHdr,
         Rpc* rpc)
 {
-    LOG(DEBUG, "masterID: %s",
-        ServerId(reqHdr->masterId).toString().c_str());
+    // Delete any state associated with this recovery (most importantly,
+    // all of the filtered log replicas). Note: this code used not to be
+    // present, since we will eventually be notified that the crashed
+    // master left the cluster (GarbageCollectDownServerTask below) and
+    // that code will take care of cleaning up the recovery state. However,
+    // the old approach resulted in servers running out of memory in some
+    // situations. Problems occur if the current recovery didn't completely
+    // recover everything from the crashed master. In this case, the server
+    // will stay in the cluster until another recovery runs, so the
+    // GarbageCollectDownServerTask cleanup won't happen right away. In the
+    // meantime, other recoveries for other masters could run; if we don't
+    // free up the resources from this recovery, which can be substantial,
+    // memory may run out during the subsequent recoveries.
+    ServerId serverId(reqHdr->masterId);
+    auto recoveryIt = recoveries.find(serverId);
+    if (recoveryIt != recoveries.end()) {
+        BackupMasterRecovery* recovery = recoveryIt->second;
+        recoveries.erase(recoveryIt);
+        recovery->free();
+    }
     rpc->sendReply();
 }
 
@@ -589,20 +607,7 @@ BackupService::writeSegment(const WireFormat::BackupWrite::Request* reqHdr,
     if (reqHdr->open && !frame) {
         LOG(DEBUG, "Opening <%s,%lu>", masterId.toString().c_str(),
             segmentId);
-        try {
-            frame = storage->open(config->backup.sync);
-        } catch (const BackupOpenRejectedException& e) {
-            // We have exceeded the limit on the number of open replicas.
-            // Print out info about all of the open replicas, in case that's
-            // useful for debugging. However, only do it occasionally to
-            // avoid generating too much log data.
-            uint64_t now = Cycles::rdtsc();
-            if (Cycles::toSeconds(now - lastLogTime) > 1.0) {
-                logOpenReplicas();
-                lastLogTime = now;
-            }
-            throw;
-        }
+        frame = storage->open(config->backup.sync);
         frames[MasterSegmentIdPair(masterId, segmentId)] = frame;
     }
 
@@ -614,6 +619,16 @@ BackupService::writeSegment(const WireFormat::BackupWrite::Request* reqHdr,
             serverId.toString().c_str());
         throw BackupBadSegmentIdException(HERE);
     } else {
+        if (!frame->currentlyOpen()) {
+            // The frame has already been closed. The most likely reason
+            // is that this RPC is a retry of a previous RPC whose response
+            // was lost. Log a message, but then just return without doing
+            // anything (i.e., make the RPC idempotent)
+            LOG(NOTICE, "Write requested for closed replica <%s,%lu>; "
+                "treating the request as noop",
+                masterId.toString().c_str(), segmentId);
+            return;
+        }
         CycleCounter<RawMetric> __(&metrics->backup.writeCopyTicks);
         Tub<BackupReplicaMetadata> metadata;
         if (reqHdr->certificateIncluded) {
@@ -651,29 +666,6 @@ try {
 } catch (...) {
     LOG(ERROR, "Unknown fatal error in BackupService::gcThread.");
     throw;
-}
-
-/**
- * Generate a log message containing the identifiers for all replicas
- * that are currently open.
- */
-void
-BackupService::logOpenReplicas()
-{
-    string frameList;
-    for (FrameMap::iterator it = frames.begin(); it != frames.end(); it++) {
-        MasterSegmentIdPair id = it->first;
-        BackupStorage::FrameRef& frame = it->second;
-        if (!frame->currentlyOpen())
-            continue;
-        if (!frameList.empty())
-            frameList.append(" ");
-        char buffer[100];
-        snprintf(buffer, sizeof(buffer), "<%s, %lu>",
-                id.masterId.toString().c_str(), id.segmentId);
-        frameList.append(buffer);
-    }
-    LOG(NOTICE, "Segment replicas currently open: %s", frameList.c_str());
 }
 
 /**

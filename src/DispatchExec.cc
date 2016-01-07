@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014 Stanford University
+/* Copyright (c) 2011-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -12,9 +12,11 @@
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
-#include "DispatchExec.h"
+
 #include "malloc.h"
 
+#include "Cycles.h"
+#include "DispatchExec.h"
 
 namespace RAMCloud {
 
@@ -25,7 +27,8 @@ namespace RAMCloud {
  *      1 is returned if there was at least one request to execute; 0
  *      is returned if this method found nothing to do.
  */
-int DispatchExec::poll() {
+int DispatchExec::poll()
+{
     int foundWork = 0;
     while (requests[removeIndex].data.full == 1) {
         Fence::enter();
@@ -34,6 +37,7 @@ int DispatchExec::poll() {
         requests[removeIndex].data.full = 0;
         removeIndex++;
         if (removeIndex == NUM_WORKER_REQUESTS) removeIndex = 0;
+        totalRemoves++;
         foundWork = 1;
     }
     return foundWork;
@@ -46,11 +50,17 @@ DispatchExec::DispatchExec(Dispatch* dispatch)
     : Poller(dispatch, "DispatchExec")
     , requests()
     , removeIndex(0)
+    , totalRemoves(0)
     , pad()
     , lock("DispatchExec:requestLock")
-    , addIndex(0) {
-        posix_memalign(reinterpret_cast<void**>(&requests), CACHE_LINE_SIZE,
-                sizeof(LambdaBox) * NUM_WORKER_REQUESTS);
+    , addIndex(0)
+    , totalAdds(0)
+{
+        int result = posix_memalign(reinterpret_cast<void**>(&requests),
+                CACHE_LINE_SIZE, sizeof(LambdaBox) * NUM_WORKER_REQUESTS);
+        if (result != 0) {
+            DIE("posix_memalign returned %s", strerror(result));
+        }
         // Double checking to make sure we get proper cache alignment.
         assert((reinterpret_cast<uint64_t>(requests) & 0x3f) == 0);
 
@@ -58,5 +68,33 @@ DispatchExec::DispatchExec(Dispatch* dispatch)
         // clear at the outset.
         memset(requests, 0, NUM_WORKER_REQUESTS * sizeof(pad));
         Fence::sfence();
+}
+
+/**
+ * Wait for a previously-scheduled piece of work to have been
+ * executed.
+ *
+ * \param id
+ *      The return value from a previous indication of addRequest:
+ *      identifies the work we want to wait for.
+ */
+void
+DispatchExec::sync(uint64_t id)
+{
+    // The only nontrivial thing here is that we want to print log messages
+    // if the sync takes an unreasonable amount of time. Print the first
+    // message after 10ms, then another message ever second after that.
+    uint64_t start = Cycles::rdtsc();
+    uint64_t nextLogTime = start + ((uint64_t) Cycles::perSecond())/100;
+    while (totalRemoves < id) {
+        uint64_t now = Cycles::rdtsc();
+        if (now >= nextLogTime) {
+            RAMCLOUD_LOG(WARNING, "DispatchExec::sync has been stalled for "
+                    "%.2f seconds", Cycles::toSeconds(now - start));
+            nextLogTime = now + (uint64_t) Cycles::perSecond();
+        }
+        if (owner->isDispatchThread())
+            owner->poll();
+    }
 }
 }

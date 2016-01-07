@@ -379,15 +379,6 @@ ParticipantList::computeChecksum()
 }
 
 /**
- * Return the unique identifier for this transaction and participant list.
- */
-TransactionId
-ParticipantList::getTransactionId()
-{
-    return TransactionId(header.clientLeaseId, header.clientTransactionId);
-}
-
-/**
  * Construct PreparedWrites.
  */
 PreparedOps::PreparedOps(Context* context)
@@ -446,41 +437,34 @@ PreparedOps::bufferOp(uint64_t leaseId,
 }
 
 /**
- * Pop a pointer to preparedOp from lookup table.
+ * Remove a pointer to preparedOp from lookup table.
  *
  * \param leaseId
  *      leaseId given for the preparedOp.
  * \param rpcId
  *      rpcId given for the preparedOp.
- *
- * \return
- *      Log::Reference::toInteger() value for the preparedOp staged.
  */
-uint64_t
-PreparedOps::popOp(uint64_t leaseId,
+void
+PreparedOps::removeOp(uint64_t leaseId,
                       uint64_t rpcId)
 {
     Lock lock(mutex);
     std::map<std::pair<uint64_t, uint64_t>,
         PreparedItem*>::iterator it;
     it = items.find(std::make_pair(leaseId, rpcId));
-    if (it == items.end()) {
-        return 0;
-    } else {
-        // During recovery, must check isDeleted before using this method.
-        // It is intentionally left as assertion error. (instead of return 0.)
-        // After the end of recovery all NULL entries should be removed.
-        assert(it->second);
-
-        uint64_t newOpPtr = it->second->newOpPtr;
+    if (it != items.end()) {
         delete it->second;
         items.erase(it);
-        return newOpPtr;
     }
 }
 
 /**
- * Peek a pointer to preparedOp from lookup table.
+ * Return a log reference to the preparedOp saved by PreparedOps::bufferOp().
+ *
+ * During recovery, ObjectManager::replaySegment() must check
+ * PreparedOps::isDeleted() is false before invoking this method for checking
+ * whether the PreparedOp log entry is already in log.
+ * (isDeleted() == true already means no need to replay the PreparedOp.)
  *
  * \param leaseId
  *      leaseId given for the preparedOp.
@@ -488,11 +472,12 @@ PreparedOps::popOp(uint64_t leaseId,
  *      rpcId given for the preparedOp.
  *
  * \return
- *      Log::Reference::toInteger() value for the preparedOp staged.
+ *      Log::Reference::toInteger() value for the preparedOp in log.
+ *      0 is returned if we cannot find a reference to PreparedOp previously
+ *      buffered.
  */
 uint64_t
-PreparedOps::peekOp(uint64_t leaseId,
-                       uint64_t rpcId)
+PreparedOps::getOp(uint64_t leaseId, uint64_t rpcId)
 {
     Lock lock(mutex);
     std::map<std::pair<uint64_t, uint64_t>,
@@ -501,9 +486,12 @@ PreparedOps::peekOp(uint64_t leaseId,
     if (it == items.end()) {
         return 0;
     } else {
-        // During recovery, must check isDeleted before using this method.
+        // During recovery, must check isDeleted before using this method since
+        // we set it->second = NULL (instead of pointer to PreparedItem) to mark
+        // the PreparedOpTombstone for this PreparedOp is seen.
         // It is intentionally left as assertion error. (instead of return 0.)
-        // After the end of recovery all NULL entries should be removed.
+        // After the end of recovery all NULL entries should be removed, and
+        // this assertion check will fail if there's a bug in code.
         assert(it->second);
 
         uint64_t newOpPtr = it->second->newOpPtr;
@@ -539,50 +527,77 @@ PreparedOps::updatePtr(uint64_t leaseId,
 void
 PreparedOps::PreparedItem::handleTimerEvent()
 {
-    Buffer opBuffer;
-    Log::Reference opRef(newOpPtr);
-    context->getMasterService()->objectManager.getLog()->getEntry(
-            opRef, opBuffer);
-    PreparedOp op(opBuffer, 0, opBuffer.size());
+    // This timer handler asynchronously notifies the recovery manager that this
+    // transaction is taking a long time and may have failed.  This handler may
+    // be called multiple times to ensure the notification is delivered.
+    //
+    // Note: This notification was previously done in synchronously, but holding
+    // the thread and worker timer resources while waiting for the notification
+    // to be acknowledge could caused deadlock when the notification is sent to
+    // the same server.
 
-    //TODO(seojin): RAM-767. op.participants can be stale while log cleaning.
-    //              It is possible to cause invalid memory access.
+    // Construct and send the RPC if it has not been done.
+    if (!txHintFailedRpc) {
+        Buffer opBuffer;
+        Log::Reference opRef(newOpPtr);
+        context->getMasterService()->objectManager.getLog()->getEntry(
+                opRef, opBuffer);
+        PreparedOp op(opBuffer, 0, opBuffer.size());
 
-    TransactionId txId = op.getTransactionId();
+        //TODO(seojin): RAM-767. op.participants can be stale while log
+        //              cleaning. It is possible to cause invalid memory access.
 
-    UnackedRpcHandle participantListLocator(
-            &context->getMasterService()->unackedRpcResults,
-            {txId.clientLeaseId, 0, 0},
-            txId.clientTransactionId,
-            0);
+        TransactionId txId = op.getTransactionId();
 
-    if (participantListLocator.isDuplicate()) {
-        Buffer pListBuf;
-        Log::Reference pListRef(participantListLocator.resultLoc());
-        context->getMasterService()->objectManager.getLog()->getEntry(pListRef,
-                                                                      pListBuf);
-        ParticipantList participantList(pListBuf);
+        UnackedRpcHandle participantListLocator(
+                &context->getMasterService()->unackedRpcResults,
+                {txId.clientLeaseId, 0, 0},
+                txId.clientTransactionId,
+                0);
 
-        assert(participantList.header.participantCount > 0);
-        TEST_LOG("TxHintFailed RPC is sent to owner of tableId %lu and "
-                "keyHash %lu.", participantList.participants[0].tableId,
-                participantList.participants[0].keyHash);
+        if (participantListLocator.isDuplicate()) {
+            Buffer pListBuf;
+            Log::Reference pListRef(participantListLocator.resultLoc());
+            context->getMasterService()->objectManager.getLog()->getEntry(
+                    pListRef, pListBuf);
+            ParticipantList participantList(pListBuf);
+            txId = participantList.getTransactionId();
+            TEST_LOG("TxHintFailed RPC is sent to owner of tableId %lu and "
+                    "keyHash %lu.",
+                    participantList.getTableId(), participantList.getKeyHash());
 
-        MasterClient::txHintFailed(context,
-                participantList.participants[0].tableId,
-                participantList.participants[0].keyHash,
-                participantList.header.clientLeaseId,
-                participantList.header.clientTransactionId,
-                participantList.header.participantCount,
-                participantList.participants);
-    } else {
-        RAMCLOUD_LOG(WARNING,
-                "Unable to find participant list record for TxId (%lu, %lu); "
-                "client transaction recovery could not be requested.",
-                txId.clientLeaseId, txId.clientTransactionId);
+            txHintFailedRpc.construct(context,
+                    participantList.getTableId(),
+                    participantList.getKeyHash(),
+                    txId.clientLeaseId,
+                    txId.clientTransactionId,
+                    participantList.getParticipantCount(),
+                    participantList.participants);
+        } else {
+            // Abort; there is no way to send the RPC if we can't find the
+            // participant list.  Hopefully, some other server still has the
+            // list.  Log this situation as it is a bug if it occurs.
+            RAMCLOUD_LOG(WARNING, "Unable to find participant list record for "
+                    "TxId (%lu, %lu); client transaction recovery could not be "
+                    "requested.", txId.clientLeaseId, txId.clientTransactionId);
+            return;
+        }
     }
 
-    this->start(Cycles::rdtsc() + Cycles::fromMicroseconds(TX_TIMEOUT_US));
+    // RPC should have been sent.
+    if (!txHintFailedRpc->isReady()) {
+        // If the RPC is not yet ready, reschedule the worker timer to poll for
+        // the RPC's completion.
+        this->start(0);
+    } else {
+        // The RPC is ready; "wait" on it as is convention.
+        txHintFailedRpc->wait();
+        txHintFailedRpc.destroy();
+
+        // Wait for another TX_TIMEOUT_US before getting worried again and
+        // resending the hint-failed notification.
+        this->start(Cycles::rdtsc() + Cycles::fromMicroseconds(TX_TIMEOUT_US));
+    }
 }
 
 /**

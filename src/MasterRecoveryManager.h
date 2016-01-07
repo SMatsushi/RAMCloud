@@ -1,4 +1,4 @@
-/* Copyright (c) 2012 Stanford University
+/* Copyright (c) 2012-2015 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -68,7 +68,6 @@ class MasterRecoveryManager : public Recovery::Owner
 
     virtual void trackerChangesEnqueued();
 
-    virtual void destroyAndFreeRecovery(Recovery* recovery);
     virtual void recoveryFinished(Recovery* recovery);
 
   PRIVATE:
