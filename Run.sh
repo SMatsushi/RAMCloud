@@ -20,11 +20,19 @@ then
     exit 1
 fi
 
+### For recovery test.
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
-cmd="scripts/clusterperf.py -v --transport=basic+dpdk basic"
+# cmd="scripts/recovery.py -v --dry --transport=basic+dpdk"
+cmd="scripts/recovery.py -v --transport=basic+dpdk"
+# cmd="scripts/recovery.py --transport=basic+dpdk"
+# cmd="scripts/recovery.py -v --transport=fast+dpdk"
+# cmd="scripts/recovery.py --transport=fast+dpdk"
 
 # use Dpdk among client and servers, tcp to/from coordinator
+# with default timeout (250s)
+# cmd="scripts/clusterperf.py -v --transport=basic+dpdk basic"
+
 # with default timeout (250s)
 # cmd="scripts/clusterperf.py -v --transport=fast+dpdk basic"
 

@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 
-__all__ = ['sh', 'captureSh', 'Sandbox', 'getDumpstr', 'getHosts', 'getOldMasterHost']
+__all__ = ['sh', 'captureSh', 'Sandbox', 'getDumpstr', 'getHosts', 'getOldMasterHost', 'getClientHost']
 
 def sh(command, bg=False, **kwargs):
     """Execute a local command."""
@@ -268,12 +268,57 @@ def getDumpstr():
     else:
         return Dumpstr(url)
 
+def atomHostList(hostIdsToUse):
+    """ Helper routine for ATOM (Micro Modular Server) Cluster.
+
+    Input a list of hostIds in 'hostIdsToUse' and
+    returns a complete list 'atomHosts' with numerical addresses
+    (ip, Mac, hostname, server number).
+    
+    If hostIdsToUse == 0 (empty), 
+    it returns a list with all available hosts from the host database.
+    """
+    valid_entry = re.compile('^([\d.]+)\s+(atom(\d\d\d)[am]?)\s+#\s*(\S+)\s+')
+    hosts_db = "/etc/hosts"
+    host_info = {}
+    file = open(hosts_db)
+    for line in file:
+        m = valid_entry.search(line)
+        if m:
+            (ip, host, host_id, mac) = m.group(1,2,3,4)
+            host_id = int(host_id)
+            if not host_id in host_info:
+                host_info[host_id] = {}
+            if re.search("a$", host):
+                host_info[host_id]['mac']  = mac
+            if re.search("\d$", host):
+                host_info[host_id]['host'] = host
+                host_info[host_id]['ip']   = ip
+
+    if not hostIdsToUse:
+        hostIdsToUse = sorted(list(host_info.keys()))
+    # Create a complete host lists for micro moduler server
+    atomHosts =[]
+    for host_id in hostIdsToUse:
+        info = host_info[int(host_id)]
+        atomHosts.append((info['host'], info['ip'], host_id, info['mac']))
+    return atomHosts
+    
 def getHosts():
     """Returns a list of the hosts available for servers or clients.
 
-    Each entry consists of a name for the host (for ssh), an IP address
-    to use for creating service locators, and an id for generating
-    Ethernet addresses.
+    A global valiable 'cluster_type' defined in config.py switches
+       the designaged cluster type:
+       rc_cluseter (default) and atom_cluster are supported.
+
+    RCCluster : when cluster_type is rc_cluster or undefined.
+     Each entry consists of a name for the host (for ssh), an IP address
+     to use for creating service locators, and an id for generating
+     Ethernet addresses.
+
+    AtomCluster : when cluster_type is atom_cluster
+     Each entry consists of a name for the host (for ssh), an IP address,
+     an id for generating Ethernet addrss, and Ethernet Mac Address.
 
     By default, the function will return a list generated from servers
     locked by the current user in rcres (an RAMCloud internal utility).
@@ -282,27 +327,47 @@ def getHosts():
     In the event that rcres is available and a custom list is defined,
     the function will validate the custom list against rcres.
 
+    
     Example for constructing a custom list in localconfig.py:
     hosts = []
     for i in range(1, 61):
         hosts.append(('rc%02d' % i,
                       '192.168.1.%d' % (100 + i),
                       i))
+
+
+    For Atom server, hosts are just a list of 3 digit id numbers:
+    for i in range(1, 61):
+        hosts.append(('%03d' % i)
+
     """
     # Find servers locked by user via rcres
-    rcresOutput = commands.getoutput('rcres ls -l | grep "$(whoami)" | cut -c13-16 | grep "rc[0-9]" | cut -c3-4')
+    if config.cluster_type == 'atom_cluster':
+        rcresOutput = commands.getoutput('mmres ls -l | grep "$(whoami)" | '
+                             'cut -c13-19 | grep "atom[0-9]" | cut -c5-7')
+    else:
+        # rc cluster
+        rcresOutput = commands.getoutput('rcres ls -l | grep "$(whoami)" | '
+                             'cut -c13-16 | grep "rc[0-9]" | cut -c3-4')
+
     rcresFailed = re.match(".*not found.*", rcresOutput)
 
     # If hosts overridden in localconfig.py, check that all servers are locked
     if 'hosts' in globals():
         requstedUnlockedHosts = []
-        for host in hosts:
-            if str("%02d" % host[2]) not in rcresOutput.split():
-                requstedUnlockedHosts.append(host[0])
+        if config.cluster_type == 'atom_cluster':
+            for host in hosts:
+                if str("%03d" % host) not in rcresOutput.split():
+                    requstedUnlockedHosts.append(host)
+        else:
+            for host in hosts:
+                if str("%02d" % host[2]) not in rcresOutput.split():
+                    requstedUnlockedHosts.append(host[0])
 
         if not rcresFailed and len(requstedUnlockedHosts) > 0:
             raise Exception ("Manually defined hosts list in localconfig.py includes the "
-                "following servers not locked by user in rcres:\r\n\t%s" % requstedUnlockedHosts)
+                "following servers not locked by user in rcres:\r\n\t%s"
+                             % requstedUnlockedHosts)
 
         return hosts
     # hosts has not been overridden, check that rcres has some servers for us
@@ -317,9 +382,15 @@ def getHosts():
 
     # Everything checks out, build list
     serverList = []
-    for hostNum in rcresOutput.split():
-        i = int(hostNum)
-        serverList.append(('rc%02d' % i,
+    if config.cluster_type == 'atom_cluster':
+        for hostNum in rcresOutput.split():
+            i = int(hostNum)
+            serverList.append('%03d' % i)
+        serverList = atomHostList(serverList)
+    else:
+        for hostNum in rcresOutput.split():
+            i = int(hostNum)
+            serverList.append(('rc%02d' % i,
                          '192.168.1.%d' % (100 + i),
                          i))
     return serverList
@@ -332,6 +403,15 @@ def getOldMasterHost():
         return config.old_master_host
     else:
         return getHosts()[-1]
+
+def getClientHost():
+    """Returns old_master_host if defined in config.py or localconfig.py.
+    Otherwise, returns the second to the last server from getHosts()
+    """
+    if config.cluster_type == 'atom_cluster':
+        return getHosts()[-2]
+    else:
+        return getOldMasterHost()
 
 def checkHost(host):
     """Returns True when the host specified is either locked via rcres or in
@@ -346,11 +426,16 @@ def checkHost(host):
             return True
 
     # Server was not found in the valid list, let's check what the problem may be
-    rcresOutput = commands.getoutput('rcres ls')
+    if config.cluster_type == 'atom_cluster':
+        rcres_cmd = 'mmres'
+    else:
+        rcres_cmd = 'rcres'
+
+    rcresOutput = commands.getoutput('%s ls' % rcres_cmd)
     rcresFailed = re.match(".*not found.*", rcresOutput)
     if rcresFailed:
         raise Exception ("Attempted to use a host (%s) that is not present in the "
             "current user's scripts/localconfig.py" % host)
     else:
         raise Exception ("Attempted to use a host (%s) that is not locked by the "
-            "current user in rcres" % host)
+            "current user in %s" % (host, rcres_cmd))

@@ -163,7 +163,7 @@ def recover(num_servers,
                       num_objects, num_removals, object_size,
                       num_servers, log_level, num_overwrites))
     args['old_master_host'] = getOldMasterHost()
-    args['client_hosts'] = [getOldMasterHost()]
+    args['client_hosts'] = [getClientHost()]
     if old_master_ram:
         args['old_master_args'] = '-d -t %d' % old_master_ram
     else:
