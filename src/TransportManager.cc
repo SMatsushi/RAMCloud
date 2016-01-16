@@ -247,6 +247,23 @@ TransportManager::initialize(const char* localServiceLocator)
         for (uint32_t i = 0; i < transportFactories.size(); i++) {
             TransportFactory* factory = transportFactories[i];
             if (factory->supports(locator.getProtocol().c_str())) {
+                // tcp only option to prevent initializing
+                // other transport. Used on coordinator only connected
+                // to servers and clients through tcp to prevent initializing
+                // other transport at Enlist server.
+                if (locator.hasOption("tcpOnly")) {
+                    char* end;
+                    uint32_t value = downCast<uint32_t>(strtoul(
+                        locator.getOption("tcpOnly").c_str(), &end, 10));
+                    if (*end == 0) {
+                        setTcpOnly(value);
+                    } else {
+                        LOG(ERROR, "Bad Locator tcpOnly option value '%s' "
+                            "(expected 0:False or else:True); ignoring option",
+                            locator.getOption("tcpOnly").c_str());
+                    }
+                }
+
                 // The transport supports a protocol that we can receive
                 // requests on.
                 Transport *transport = factory->createTransport(context,
@@ -431,7 +448,7 @@ TransportManager::openSessionInternal(const string& serviceLocator)
             if (tcpOnly) {
                 if (strcmp(locCp,"tcp")) {
                     // not match to tcp
-                    LOG(WARNING,"tcpOlny mode: %s not supported. skipped.",
+                    LOG(WARNING,"tcpOnly mode: %s not supported. skipped.",
                         locCp);
                     continue;
                 }
