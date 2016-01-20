@@ -55,13 +55,15 @@ server_locator_templates = {
     'infrc': 'infrc:host=%(host)s,port=%(port)d',
     'basic+infud': 'basic+infud:host=%(host1g)s,rttMicros=6,gbs=30',
     'fast+infud': 'fast+infud:host=%(host1g)s',
-    'unreliable+infud': 'unreliable+infud:host=%(host1g)s',
+    'Unreliable+infud': 'unreliable+infud:host=%(host1g)s',
     'fast+infeth': 'fast+infeth:mac=00:11:22:33:44:%(id)02x',
     'unreliable+infeth': 'unreliable+infeth:mac=00:11:22:33:44:%(id)02x',
 #    'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0',
     'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0',
-    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
+#    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
+#    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
+    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
 }
 coord_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
@@ -80,7 +82,9 @@ coord_locator_templates = {
     'fast+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
     'unreliable+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
     'fast+dpdk': 'tcp:host=%(host)s,port=%(port)d',
-    'basic+dpdk': 'tcp:host=%(host)s,port=%(port)d',
+#    'basic+dpdk': 'tcp:host=%(host)s,port=%(port)d,tcpOnly=1',
+#    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
+     'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
 }
 
 def server_locator(transport, host, port=server_port):
@@ -194,7 +198,7 @@ class Cluster(object):
         self.transport = 'infrc'
         self.replicas = 3
         self.disk = default_disk1
-        self.disjunct = False
+        self.disjunct = default_disjunct
         self.tcp_only_coord = False
 
         if cluster_name_exists: # do nothing if it exists
@@ -214,9 +218,10 @@ class Cluster(object):
         self.masters_started = 0
         self.backups_started = 0
 
-        self.coordinator_host= getHosts()[0]
+        self.coordinator_host= getCoordinatorHost();
         self.coordinator_locator = coord_locator(self.transport,
                                                  self.coordinator_host)
+        self.ensureserver_host = getEnsureserverHost();
         self.log_subdir = log.createDir(log_dir, log_exists)
 
         # Create a perfcounters directory under the log directory.
@@ -450,8 +455,9 @@ class Cluster(object):
                              numMasters, numBackups, timeout,
                              self.log_subdir))
             if self.verbose:
-                print("ensureServers command: %s" % ensureCommand)
-            self.sandbox.rsh(self.coordinator_host[0], ensureCommand)
+                print("ensureServers on %s: %s" % (
+                        self.ensureserver_host[0],ensureCommand))
+            self.sandbox.rsh(self.ensureserver_host[0], ensureCommand)
         except:
             # prefer exceptions from dead processes to timeout error
             self.sandbox.checkFailures()
@@ -594,7 +600,7 @@ def run(
         enable_logcabin=False,     # Do not enable logcabin.
         valgrind=False,		   # Do not run under valgrind
         valgrind_args='',	   # Additional arguments for valgrind
-        disjunct=False,            # Disjunct entities on a server
+        disjunct=default_disjunct, # Disjunct entities on a server
         coordinator_host=None
         ):
     """
@@ -780,7 +786,8 @@ if __name__ == '__main__':
     parser.add_option('--valgrindArgs', metavar='ARGS', default='',
             dest='valgrind_args',
             help='Arguments to pass to valgrind')
-    parser.add_option('--disjunct', action='store_true', default=False,
+    parser.add_option('--disjunct', action='store_true',
+                      default=default_disjunct,
             help='Disjunct entities (disable collocation) on each server')
 
     (options, args) = parser.parse_args()

@@ -26,7 +26,9 @@ import subprocess
 import sys
 import time
 
-__all__ = ['sh', 'captureSh', 'Sandbox', 'getDumpstr', 'getHosts', 'getOldMasterHost', 'getClientHost']
+__all__ = ['sh', 'captureSh', 'Sandbox', 'getDumpstr', 'getHosts',
+           'getOldMasterHost', 'getClientHost', 'getCoordinatorHost',
+           'getEnsureserverHost']
 
 def sh(command, bg=False, **kwargs):
     """Execute a local command."""
@@ -404,7 +406,7 @@ def getOldMasterHost():
     else:
         return getHosts()[-1]
 
-def getClientHost():
+def getCoordinatorHost():
     """Returns old_master_host if defined in config.py or localconfig.py.
     Otherwise, returns the second to the last server from getHosts()
     """
@@ -412,6 +414,25 @@ def getClientHost():
         return getHosts()[-2]
     else:
         return getOldMasterHost()
+
+def getClientHost():
+    """Returns old_master_host if defined in config.py or localconfig.py.
+    Otherwise, returns the second to the last server from getHosts()
+    """
+    if config.cluster_type == 'atom_cluster':
+        return getHosts()[-3]
+    else:
+        return getCoordinatorHost()
+    
+def getEnsureserverHost():
+    """Returns old_master_host if defined in config.py or localconfig.py.
+    Otherwise, returns the second to the last server from getHosts()
+    """
+    if config.cluster_type == 'atom_cluster':
+        return getHosts()[-4]
+    else:
+        return getCoordinatorHost()
+
 
 def checkHost(host):
     """Returns True when the host specified is either locked via rcres or in

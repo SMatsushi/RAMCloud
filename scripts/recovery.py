@@ -146,7 +146,7 @@ def recover(num_servers,
     args['transport'] = transport
     args['verbose'] = verbose
     args['debug'] = debug
-    args['coordinator_host'] = getOldMasterHost()
+    args['coordinator_host'] = getCoordinatorHost()
     args['coordinator_args'] = coordinator_args
     if backup_args:
         args['backup_args'] += backup_args;

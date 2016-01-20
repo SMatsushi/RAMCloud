@@ -34,7 +34,8 @@ cluster_type = 'atom_cluster'
 
 __all__ = ['coordinator_port', 'default_disk1','default_disk2', 'git_branch',
            'git_ref', 'git_diff', 'obj_dir', 'obj_path', 'scripts_path',
-           'second_backup_port', 'server_port', 'top_path']
+           'second_backup_port', 'server_port', 'top_path',
+           'default_disjunct']
 
 # git_branch is the name of the current git branch, which is used
 # for purposes such as computing objDir.
@@ -103,6 +104,9 @@ second_backup_port = 12248
 if cluster_type == 'atom_cluster':
     default_disk1 = '-f /var/ramcloud/backup/backup1.db'
     default_disk2 = '-f /var/ramcloud/backup/backup2.db'
+
+    # cannot collocate multiple RAMCloud agent on a sigle server
+    default_disjunct = True
 else:
     # default is RCCluster
     
@@ -114,6 +118,8 @@ else:
     # store its segment replicas.
     default_disk2 = '-f /dev/sdb2'
 
+    # default option of disjunct flag
+    default_disjunct = False
 
 # Try to include local overrides.
 try:
