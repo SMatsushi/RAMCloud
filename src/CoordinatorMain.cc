@@ -104,7 +104,6 @@ main(int argc, char *argv[])
         localLocator = optionParser.options.getCoordinatorLocator();
         context.transportManager->setSessionTimeout(
                 optionParser.options.getSessionTimeout());
-        context.transportManager->setTcpOnly(true);
         context.transportManager->initialize(localLocator.c_str());
         localLocator = context.transportManager->
                                 getListeningLocatorsString();
