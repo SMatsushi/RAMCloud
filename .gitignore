@@ -9,7 +9,10 @@
 *.orig
 *.patch
 *.diff
+.tags*
 
+/install/
+/bindings/java/build/
 /logs/
 /docs/doxygen/
 /docs/epydoc/
@@ -19,3 +22,8 @@
 /scripts/localconfig.py
 TAGS
 tags
+
+# Ignore IDE files
+/.idea/
+/nbproject/
+

@@ -14,6 +14,7 @@ YIELD ?= no
 SSE ?= sse4.2
 ARCH ?= core2
 COMPILER ?= gnu
+SANITIZER ?= none
 VALGRIND ?= no
 ONLOAD_DIR ?= /usr/local/openonload-201405
 
@@ -64,6 +65,21 @@ COMFLAGS := $(BASECFLAGS) $(OPTFLAG) -fno-strict-aliasing \
 	        $(DEBUGFLAGS)
 ifeq ($(COMPILER),gnu)
 COMFLAGS += -march=$(ARCH)
+endif
+# Google sanitizers are not compatible with each other, so only apply one at a
+# time.
+ifeq ($(SANITIZER),address)
+COMFLAGS += -DASAN -fsanitize=address -fno-omit-frame-pointer
+LDFLAGS += -fsanitize=address
+else ifeq ($(SANITIZER),memory)
+# MSan is by far a unique feature in Clang and not available to GCC as of
+# version 5.3
+else ifeq ($(SANITIZER),thread)
+COMFLAGS += -DTSAN -fsanitize=thread -fno-omit-frame-pointer -fPIE
+LDFLAGS += -fsanitize=thread -pie
+else ifeq ($(SANITIZER),undefined)
+COMFLAGS += -DUBSAN -fsanitize=undefined -fno-omit-frame-pointer
+LDFLAGS += -fsanitize=undefined
 endif
 ifeq ($(VALGRIND),yes)
 COMFLAGS += -DVALGRIND
@@ -237,13 +253,13 @@ ifeq ($(YIELD),yes)
 COMFLAGS += -DYIELD=1
 endif
 
-CFLAGS_BASE := $(COMFLAGS) -std=gnu0x $(INCLUDES)
+CFLAGS_BASE := $(COMFLAGS) -std=gnu11 $(INCLUDES)
 CFLAGS_SILENT := $(CFLAGS_BASE)
 CFLAGS_NOWERROR := $(CFLAGS_BASE) $(CWARNS)
 # CFLAGS := $(CFLAGS_BASE) $(CWARNS)
 CFLAGS := $(CFLAGS_BASE) -Werror $(CWARNS)
 
-CXXFLAGS_BASE := $(COMFLAGS) -std=c++0x $(INCLUDES)
+CXXFLAGS_BASE := $(COMFLAGS) -std=c++11 $(INCLUDES)
 CXXFLAGS_SILENT := $(CXXFLAGS_BASE) $(EXTRACXXFLAGS)
 CXXFLAGS_NOWERROR := $(CXXFLAGS_BASE) $(CXXWARNS) $(EXTRACXXFLAGS)
 # CXXFLAGS := $(CXXFLAGS_BASE) $(CXXWARNS) $(EXTRACXXFLAGS) $(PERF)
@@ -348,7 +364,7 @@ docs:
 	@DOCSID=`git branch --no-color | grep "*" | cut -f2 -d" "` ;\
 	DOCSID=$$DOCSID-`cat ".git/$$( git symbolic-ref HEAD )" | cut -c1-6` ;\
 	(echo "PROJECT_NUMBER = \"Version [$$DOCSID]\""; \
-	 echo "INPUT = src bindings README $(OBJDIR)"; \
+	 echo "INPUT = src bindings README.md $(OBJDIR)"; \
 	 echo "INCLUDE_PATH = $(OBJDIR)"; ) | cat Doxyfile - | $(DOXYGEN) -
 
 docs-clean: python-docs-clean
