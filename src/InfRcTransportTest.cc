@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015 Stanford University
+/* Copyright (c) 2011-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -83,48 +83,55 @@ bool sendZeroCopyFilter(string s) {
 }
 
 TEST_F(InfRcTransportTest, ClientRpc_sendZeroCopy) {
-    Transport::SessionRef session = client.getSession(&locator);
-    client.testingDontReallySend = true;
-    MockWrapper rpc1("r1");
-    MockWrapper rpc2("r2");
-    TestLog::Enable _(sendZeroCopyFilter);
-    session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
-    EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED", TestLog::get());
-    TestLog::reset();
-    session->sendRequest(&rpc2.request, &rpc2.response, &rpc2);
-    EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED", TestLog::get());
+    void *page = NULL;
+    {
+        Transport::SessionRef session = client.getSession(&locator);
+        client.testingDontReallySend = true;
+        MockWrapper rpc1("r1");
+        MockWrapper rpc2("r2");
+        TestLog::Enable _(sendZeroCopyFilter);
+        session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
+        EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED", TestLog::get());
+        TestLog::reset();
+        session->sendRequest(&rpc2.request, &rpc2.response, &rpc2);
+        EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED", TestLog::get());
 
-    void* page = Memory::xmemalign(HERE, getpagesize(), getpagesize());
-    client.registerMemory(page, getpagesize());
+        page = Memory::xmemalign(HERE, getpagesize(), getpagesize());
+        client.registerMemory(page, getpagesize());
 
-    rpc1.request.appendExternal(page, getpagesize());
-    TestLog::reset();
-    session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
-    EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
-              "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY", TestLog::get());
+        rpc1.request.appendExternal(page, getpagesize());
+        TestLog::reset();
+        session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
+        EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
+                          "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY",
+                          TestLog::get());
 
-    rpc1.request.appendExternal("other", 5);
-    TestLog::reset();
-    session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
-    EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
-              "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY | "
-              "sendZeroCopy: isge[2]: 5 bytes COPIED", TestLog::get());
+        rpc1.request.appendExternal("other", 5);
+        TestLog::reset();
+        session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
+        EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
+                          "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY | "
+                          "sendZeroCopy: isge[2]: 5 bytes COPIED",
+                           TestLog::get());
 
-    rpc1.request.appendExternal("more", 5);
-    TestLog::reset();
-    session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
-    EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
-              "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY | "
-              "sendZeroCopy: isge[2]: 10 bytes COPIED", TestLog::get());
+        rpc1.request.appendExternal("more", 5);
+        TestLog::reset();
+        session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
+        EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
+                          "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY | "
+                          "sendZeroCopy: isge[2]: 10 bytes COPIED",
+                          TestLog::get());
 
-    rpc1.request.appendExternal(page, getpagesize());
-    TestLog::reset();
-    session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
-    EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
-              "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY | "
-              "sendZeroCopy: isge[2]: 10 bytes COPIED | "
-              "sendZeroCopy: isge[3]: 4096 bytes ZERO-COPY", TestLog::get());
-
+        rpc1.request.appendExternal(page, getpagesize());
+        TestLog::reset();
+        session->sendRequest(&rpc1.request, &rpc1.response, &rpc1);
+        EXPECT_EQ("sendZeroCopy: isge[0]: 10 bytes COPIED | "
+                          "sendZeroCopy: isge[1]: 4096 bytes ZERO-COPY | "
+                          "sendZeroCopy: isge[2]: 10 bytes COPIED | "
+                          "sendZeroCopy: isge[3]: 4096 bytes ZERO-COPY",
+                          TestLog::get());
+    }
+    // only free page after the session is destructed to silence ASan
     free(page);
 }
 
@@ -221,19 +228,19 @@ TEST_F(InfRcTransportTest, InfRcSession_cancelRequest_rpcSent) {
     rpc.request.fillFromString("xyzzy");
     session->sendRequest(&rpc.request, &rpc.response, &rpc);
     serverRpc = context.workerManager->waitForRpc(1.0);
-
-    // Note: the log entry for the unrecognized response to the canceled
-    // RPC only appears here (InfRc doesn't check for responses unless
-    // there are active RPCs).
-    EXPECT_TRUE(TestUtil::matchesPosixRegex(
-                " incoming data doesn't match active RPC (nonce .*)",
-                TestLog::get()));
     EXPECT_TRUE(serverRpc != NULL);
     EXPECT_EQ("xyzzy/0", TestUtil::toString(&serverRpc->requestPayload));
     serverRpc->replyPayload.fillFromString("response2");
     serverRpc->sendReply();
     EXPECT_TRUE(TestUtil::waitForRpc(&context, rpc));
     EXPECT_EQ("response2/0", TestUtil::toString(&rpc.response));
+
+    // Note: the log entry for the unrecognized response to the canceled
+    // RPC may not appear until here (InfRc doesn't check for responses unless
+    // there are active RPCs).
+    EXPECT_TRUE(TestUtil::matchesPosixRegex(
+                " incoming data doesn't match active RPC (nonce .*)",
+                TestLog::get()));
 }
 
 TEST_F(InfRcTransportTest, getRpcInfo) {

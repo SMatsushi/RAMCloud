@@ -404,10 +404,11 @@ MasterService::enumerate(const WireFormat::Enumerate::Request* reqHdr,
     EnumerationIterator iter(*rpc->requestPayload,
             downCast<uint32_t>(sizeof(*reqHdr)), reqHdr->iteratorBytes);
 
-    Buffer payload;
-    // A rough upper bound on how much space will be available in the response.
+    // Put at most maxPayloadBytes of enumerated objects in the reply. This
+    // limit is used to leave enough room in the reply buffer for the response
+    // header and also the serialized iteration state at the end of enumeration.
     uint32_t maxPayloadBytes = downCast<uint32_t>(
-            Transport::MAX_RPC_LEN - sizeof(*respHdr) - reqHdr->iteratorBytes);
+            Transport::MAX_RPC_LEN - sizeof(*respHdr) - (1 << 20));
     Enumeration enumeration(
             reqHdr->tableId, reqHdr->keysOnly,
             reqHdr->tabletFirstHash,
@@ -2529,16 +2530,20 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
             objectManager.getLog()->getEntry(opRef, opBuffer);
             PreparedOp op(opBuffer, 0, opBuffer.size());
 
+            Status status;
             if (op.header.type == WireFormat::TxPrepare::READ) {
-                objectManager.commitRead(op, opRef);
+                status = objectManager.commitRead(op, opRef);
             } else if (op.header.type == WireFormat::TxPrepare::REMOVE) {
-                objectManager.commitRemove(op, opRef);
+                status = objectManager.commitRemove(op, opRef);
             } else if (op.header.type == WireFormat::TxPrepare::WRITE) {
-                objectManager.commitWrite(op, opRef);
+                status = objectManager.commitWrite(op, opRef);
             }
 
-            preparedOps.removeOp(reqHdr->leaseId,
-                                 participants[i].rpcId);
+            if (status != STATUS_OK) {
+                respHdr->common.status = status;
+                rpc->sendReply();
+                return;
+            }
         }
     } else if (reqHdr->decision == WireFormat::TxDecision::ABORT) {
         for (uint32_t i = 0; i < participantCount; ++i) {
@@ -2566,10 +2571,13 @@ MasterService::txDecision(const WireFormat::TxDecision::Request* reqHdr,
             objectManager.getLog()->getEntry(opRef, opBuffer);
             PreparedOp op(opBuffer, 0, opBuffer.size());
 
-            objectManager.commitRead(op, opRef);
+            Status status = objectManager.commitRead(op, opRef);
 
-            preparedOps.removeOp(reqHdr->leaseId,
-                              participants[i].rpcId);
+            if (status != STATUS_OK) {
+                respHdr->common.status = status;
+                rpc->sendReply();
+                return;
+            }
         }
     } else {
         respHdr->common.status = STATUS_REQUEST_FORMAT_ERROR;

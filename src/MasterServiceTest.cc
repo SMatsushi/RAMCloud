@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2015 Stanford University
+/* Copyright (c) 2010-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -3104,7 +3104,7 @@ TEST_F(MasterServiceTest, txPrepare_retriedPrepares) {
     Key key4(1, "key4", 4);
     Key key5(1, "key5", 4);
 
-    WireFormat::TxParticipant participants[4];
+    WireFormat::TxParticipant participants[5];
     participants[0] = TxParticipant(key1.getTableId(), key1.getHash(), 10U);
     participants[1] = TxParticipant(key2.getTableId(), key2.getHash(), 11U);
     participants[2] = TxParticipant(key3.getTableId(), key3.getHash(), 12U);

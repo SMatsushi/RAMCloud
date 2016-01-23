@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2015 Stanford University
+/* Copyright (c) 2010-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -34,8 +34,6 @@
 
 namespace RAMCloud {
 
-Logger* Logger::sharedLogger = NULL;
-
 /**
  * Friendly names for each #LogLevel value.
  * Keep this in sync with the LogLevel enum.
@@ -59,7 +57,8 @@ static_assert(unsafeArrayLength(logModuleNames) == NUM_LOG_MODULES,
               "logModuleNames size does not match NUM_LOG_MODULES");
 
 /**
- * Create a new debug logger; messages will go to stderr by default.
+ * Create a new debug logger; messages will go to stderr by default. Should
+ * not be called outside this class except during unit testing.
  * \param[in] level
  *      Messages for all modules at least as important as \a level will be
  *      logged.
@@ -119,7 +118,7 @@ Logger::~Logger()
 
     if (mustCloseFd)
         close(fd);
-    delete messageBuffer;
+    delete[] messageBuffer;
 }
 
 /**
@@ -128,21 +127,25 @@ Logger::~Logger()
 Logger&
 Logger::get()
 {
-    if (sharedLogger == NULL) {
-        sharedLogger = new Logger();
-    }
-    return *sharedLogger;
+    // Use static local variable to achieve efficient thread-safe lazy
+    // initialization. If multiple threads attempt to initialize sharedLogger
+    // concurrently, the initialization is guaranteed to occur exactly once.
+    static Logger sharedLogger;
+    return sharedLogger;
 }
 
 /**
  * Arrange for future log messages to go to a particular file.
+ *
+ * This should only be invoked when one is sure that printThread is not
+ * running (e.g. before any logMessage() invocations) due to a file
+ * descriptor race that can occur (RAM-839).
  * \param path
  *      The pathname for the log file, which may or may not exist already.
  * \param truncate
  *      True means the log file should be truncated if it already exists;
  *      false means an existing log file is retained, and new messages are
  *      appended.
- *      
  */
 void
 Logger::setLogFile(const char* path, bool truncate)

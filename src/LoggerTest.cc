@@ -36,6 +36,7 @@ class LoggerTest : public ::testing::Test {
 
     ~LoggerTest()
     {
+        Logger::get().sync();
         Logger::get().reset();
         unlink("__test.log");
     }
@@ -87,7 +88,8 @@ TEST_F(LoggerTest, destructor) {
 }
 
 TEST_F(LoggerTest, setLogFile_basics) {
-    Logger l(NOTICE);
+    Logger& l = Logger::get();
+    l.setLogLevels(NOTICE);
     l.setLogFile("__test.log");
     l.logMessage(false, DEFAULT_LOG_MODULE, NOTICE, HERE, "message 1\n");
     EXPECT_TRUE(TestUtil::matchesPosixRegex("message 1", getLog("__test.log")));
@@ -102,6 +104,7 @@ TEST_F(LoggerTest, setLogFile_basics) {
     EXPECT_TRUE(TestUtil::matchesPosixRegex("message 3",
             getLog("__test.log")));
 }
+
 TEST_F(LoggerTest, setLogFile_cantOpenFile) {
     Logger l(NOTICE);
     string message("no exception");
@@ -251,7 +254,7 @@ TEST_F(LoggerTest, logMessage_basics) { // also tests LOG
             "LoggerTest.cc:[[:digit:]]\\{1,4\\} in TestBody "
             "ERROR\\[1\\]: rofl: 3\n$";
     EXPECT_TRUE(TestUtil::matchesPosixRegex(pattern,
-            TestUtil::readFile("__test.log")));
+            getLog("__test.log")));
 
     logger.setLogFile("__test.log", true);
     for (int i = 0; i < 3; i++) {
@@ -472,6 +475,7 @@ TEST_F(LoggerTest, cleanCollapseMap_print) {
 
 TEST_F(LoggerTest, addToBuffer) {
     Logger& logger = Logger::get();
+    logger.setLogFile("__test.log", true);
     logger.testingNoNotify = true;
     logger.nextToPrint = 15;
     logger.nextToInsert = logger.bufferSize - 20;
@@ -494,6 +498,9 @@ TEST_F(LoggerTest, addToBuffer) {
     // Third append: not enough space.
     EXPECT_FALSE(logger.addToBuffer("EFGHIJ", 6));
     EXPECT_EQ(9, logger.nextToInsert);
+
+    // Wakeup the print thread so that the Test destructor will finish sync()
+    logger.logDataAvailable.notify_one();
 }
 
 TEST_F(LoggerTest, printThreadMain_exit) {
