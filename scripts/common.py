@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # Copyright (c) 2010 Stanford University
+# Copyright (c) 2014-2016 NEC Corporation
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -355,7 +356,7 @@ def getHosts():
     rcresFailed = re.match(".*not found.*", rcresOutput)
 
     # If hosts overridden in localconfig.py, check that all servers are locked
-    if 'hosts' in globals():
+    if hosts is not None and'hosts' in globals():
         requstedUnlockedHosts = []
         if config.cluster_type == 'atom_cluster':
             for host in hosts:

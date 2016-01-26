@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # Copyright (c) 2011 Stanford University
-# Copyright (c) 2014-2015 NEC Corporation
+# Copyright (c) 2014-2016 NEC Corporation
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above
@@ -33,8 +33,8 @@ import subprocess
 cluster_type = 'atom_cluster'
 
 __all__ = ['coordinator_port', 'default_disk1','default_disk2', 'git_branch',
-           'git_ref', 'git_diff', 'obj_dir', 'obj_path', 'scripts_path',
-           'second_backup_port', 'server_port', 'top_path',
+           'git_ref', 'git_diff', 'hosts', 'obj_dir', 'obj_path',
+           'scripts_path', 'second_backup_port', 'server_port', 'top_path',
            'default_disjunct']
 
 # git_branch is the name of the current git branch, which is used
@@ -120,6 +120,10 @@ else:
 
     # default option of disjunct flag
     default_disjunct = False
+
+# List of machines available to use as servers or clients; see
+# common.getHosts() for more information on how to set this variable.
+hosts = None
 
 # Try to include local overrides.
 try:

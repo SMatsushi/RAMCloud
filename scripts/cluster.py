@@ -1,7 +1,6 @@
 #!/usr/bin/env python
-
 # Copyright (c) 2010-2014 Stanford University
-# Copyright (c) 2014-2015 NEC Corporation
+# Copyright (c) 2014-2016 NEC Corporation
 #
 # Permission to use, copy, modify, and distribute this software for any
 # purpose with or without fee is hereby granted, provided that the above

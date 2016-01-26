@@ -1,5 +1,6 @@
 /* Copyright (c) 2015 Stanford University
  * Copyright (c) 2014-2015 Huawei Technologies Co. Ltd.
+ * Copyright (c) 2014-2016 NEC Corporation
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
