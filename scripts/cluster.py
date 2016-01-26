@@ -63,7 +63,8 @@ server_locator_templates = {
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
-    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
+#    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
+    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=8,gbs=2',
 }
 coord_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
@@ -84,7 +85,8 @@ coord_locator_templates = {
     'fast+dpdk': 'tcp:host=%(host)s,port=%(port)d',
 #    'basic+dpdk': 'tcp:host=%(host)s,port=%(port)d,tcpOnly=1',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
-     'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
+#     'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
+     'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=8,gbs=2',
 }
 
 def server_locator(transport, host, port=server_port):
