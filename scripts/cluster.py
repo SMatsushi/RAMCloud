@@ -508,7 +508,8 @@ class Cluster(object):
                 self.sandbox.checkFailures()
                 time.sleep(.1)
                 if time.time() - start > timeout:
-                    raise Exception('timeout exceeded %s' % self.log_subdir)
+                    raise Exception('timeout (%d sec) exceeded %s' %
+                                    (timeout, self.log_subdir))
             if self.verbose:
                 print('%s finished' % p.sonce)
 
@@ -621,8 +622,9 @@ def run(
 
 # When disjunct=True, disjuncts Coordinator and Clients on Server nodes.
     if disjunct:
-        if num_servers + num_clients + 1 > len(getHosts()):
-            raise Exception('num_servers (%d)+num_clients (%d)+1(coord) exceeds the available hosts (%d)'
+        if num_servers + num_clients + 2 > len(getHosts()):
+            raise Exception('num_servers (%d)+num_clients (%d)+2(coord,ensure)'
+                            'exceeds the available hosts (%d)'
                             % (num_servers, num_clients, len(getHosts())))
     else:
         if num_servers > len(getHosts()):

@@ -221,6 +221,12 @@ def run_test(
         client_args['--numVClients'] = options.numVClients
     test.function(test.name, options, cluster_args, client_args)
 
+def get_num_servers():
+    if disjunct:
+        len(getHosts()) - 3
+    else:
+        len(getHosts())
+    
 #-------------------------------------------------------------------
 # Driver functions follow below.  These functions are responsible for
 # invoking ClusterPerf via cluster.py, and they collect and print
@@ -271,7 +277,7 @@ def indexBasic(name, options, cluster_args, client_args):
         cluster_args['timeout'] = 200
     # Ensure at least 5 hosts for optimal performance
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
     cluster.run(client='%s/ClusterPerf %s %s' %
             (obj_path, flatten_args(client_args), name), **cluster_args)
     print(get_client_log(), end='')
@@ -291,7 +297,7 @@ def indexRange(name, options, cluster_args, client_args):
 
     # Ensure at least 5 hosts for optimal performance
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
     cluster.run(client='%s/ClusterPerf %s %s' %
             (obj_path, flatten_args(client_args), name), **cluster_args)
     print(get_client_log(), end='')
@@ -303,7 +309,7 @@ def indexMultiple(name, options, cluster_args, client_args):
         cluster_args['timeout'] = 360
     # Ensure atleast 15 hosts for optimal performance
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
 
     # use a maximum of 10 secondary keys
     if len(getHosts()) <= 10:
@@ -339,7 +345,7 @@ def indexScalability(name, options, cluster_args, client_args):
 
     # Ensure at least 15 hosts for optimal performance
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
     if 'num_clients' not in cluster_args:
         cluster_args['num_clients'] = 10
     cluster.run(client='%s/ClusterPerf %s %s' %
@@ -353,7 +359,7 @@ def indexWriteDist(name, options, cluster_args, client_args):
         cluster_args['timeout'] = 200
 
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
 
     if '--count' not in client_args:
         client_args['--count'] = 10000
@@ -384,7 +390,7 @@ def indexReadDist(name, options, cluster_args, client_args):
         cluster_args['timeout'] = 200
 
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
 
     if '--count' not in client_args:
         client_args['--count'] = 10000
@@ -454,7 +460,7 @@ def multiOp(name, options, cluster_args, client_args):
     if cluster_args['timeout'] < 100:
         cluster_args['timeout'] = 100
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
     client_args['--numTables'] = cluster_args['num_servers'];
     cluster.run(client='%s/ClusterPerf %s %s' %
             (obj_path, flatten_args(client_args), name),
@@ -562,7 +568,7 @@ def txCollision(name, options, cluster_args, client_args):
     if cluster_args['timeout'] < 100:
         cluster_args['timeout'] = 100
     if options.num_servers == None:
-        cluster_args['num_servers'] = len(getHosts())
+        cluster_args['num_servers'] = get_num_servers()
     #client_args['--numTables'] = cluster_args['num_servers'];
     if 'num_clients' not in cluster_args:
         cluster_args['num_clients'] = 5
@@ -676,7 +682,8 @@ if __name__ == '__main__':
     parser.add_option('-c', '--count', type=int,
             metavar='N', dest='count',
             help='Number of times to perform the operation')
-    parser.add_option('--disjunct', action='store_true', default=False,
+    parser.add_option('--disjunct', action='store_true',
+                      default=config.default_disjunct,
             metavar='True/False',
             help='Do not colocate clients on a node (servers are never '
                   'colocated, regardless of this option)')
