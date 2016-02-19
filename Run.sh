@@ -2,6 +2,17 @@
 #
 # Compile RAMCloud and Run Clusterperf.py basic for debugging
 
+CMDNAME=`basename $0`
+while getopts chp: OPT
+do
+    case $OPT in
+	"c" ) flag_c="TRUE";;
+	"p" ) flag_p="TRUE"; prefix=$OPTARG ;;
+	"h" ) echo "Usage: $CMDNAME [-c][-h][-p log_prefix]" 1>&2
+            exit  ;;
+    esac
+done
+
 if [ -d logs/20[0-9]* ]
 then
     basen=`basename logs/20[0-9]*`
@@ -12,7 +23,12 @@ then
 fi
 cmd="make -j8 DEBUG=no DPDK=yes"
 echo $cmd
-lrun $cmd
+if [ "$flag_c" = "TRUE" ]; then
+    $cmd
+    exit 0
+else
+    lrun $cmd
+fi
 
 if [ $? -ne 0 ]
 then
@@ -50,7 +66,19 @@ cmd="scripts/recovery.py -v --timeout=700 --transport=basic+dpdk"
 echo $cmd
 lrun $cmd
 
+# mv multiple log dirs to the latest. For clusterperf...
 mv 20*.log logs/latest
 ls -l logs | grep latest
 fdir=`ls -l logs | grep latest | awk '{ print $NF }'`
 mv logs/201* logs/$fdir
+
+# rename logdir to newdir name
+if [ "$flag_p" = "TRUE" ]; then
+    newdir="${prefix}-${fdir}"
+    mv logs/$fdir logs/$newdir
+
+else
+    newdir=$fdir
+fi
+echo logs/$newdir is created.
+
