@@ -36,12 +36,27 @@ then
     exit 1
 fi
 
+cperfTests=(         "basic" \
+                     "multiRead_oneMaster" \
+                     "multiRead_oneObjectPerMaster" \
+                     "multiReadThroughput" \
+                     "multiWrite_oneMaster" \
+                     "readDistRandom" \
+                     "writeDistRandom" \
+                     "readThroughput" \
+                     "readVaryingKeyLength" \
+                     "writeVaryingKeyLength" \
+#                     "indexBasic" \
+#                     "indexMultiple" \
+                     "transaction_oneMaster" )
+
+# echo "tests=${cperfTests[@]}"
+
 ### For recovery test.
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
 # cmd="scripts/recovery.py -v --dry --transport=basic+dpdk"
-cmd="scripts/recovery.py -v --timeout=700 --transport=basic+dpdk"
-# cmd="scripts/recovery.py -v --timeout=900 --transport=basic+dpdk"
+# cmd="scripts/recovery.py -v --timeout=700 --transport=basic+dpdk"
 # cmd="scripts/recovery.py -v --transport=basic+dpdk"
 # cmd="scripts/recovery.py -v --transport=fast+dpdk"
 # cmd="scripts/recovery.py --transport=fast+dpdk"
@@ -49,6 +64,10 @@ cmd="scripts/recovery.py -v --timeout=700 --transport=basic+dpdk"
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk"
+# cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk readDistRandom writeDistRandom readThroughput transaction_oneMaster"
+# cmd="mmfilter scripts/clusterperf.py --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk ${cperfTests[@]}"
+cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic indexMultiple"
+# cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk transaction_oneMaster"
 # cmd="scripts/clusterperf.py -v --transport=basic+dpdk basic"
 
 # with default timeout (250s)

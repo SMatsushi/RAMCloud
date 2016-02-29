@@ -18,6 +18,7 @@
 Runs one or more cluster benchmarks for RAMCloud, using cluster.py to
 set up the cluster and ClusterPerf.cc to implement the details of the
 benchmark.
+
 """
 
 # TO ADD A NEW BENCHMARK:
@@ -113,7 +114,7 @@ def print_cdf_from_log(
         raise Exception("couldn't find log file for client %d" % (index))
     result = "";
     for line in open(globResult[0], 'r'):
-        if not re.match('([0-9]+\.[0-9]+) ', line):
+        if re.match('([0-9]+\.[0-9]+),([0-9]+\.[0-9]+)', line):
             for value in line.split(","):
                 numbers.append(float(value))
 
@@ -149,7 +150,7 @@ def print_rcdf_from_log(
         raise Exception("couldn't find log file for client %d" % (index))
     result = "";
     for line in open(globResult[0], 'r'):
-        if not re.match('([0-9]+\.[0-9]+) ', line):
+        if re.match('([0-9]+\.[0-9]+),([0-9]+\.[0-9]+)', line):
             for value in line.split(","):
                 numbers.append(float(value))
 
