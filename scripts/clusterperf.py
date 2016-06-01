@@ -276,6 +276,8 @@ def indexBasic(name, options, cluster_args, client_args):
         cluster_args['master_args'] = '--maxCores 2 --totalMasterMemory 1500'
     if cluster_args['timeout'] < 200:
         cluster_args['timeout'] = 200
+    # Force num_clients = 1
+    cluster_args['num_clients'] = 1
     # Ensure at least 5 hosts for optimal performance
     if options.num_servers == None:
         cluster_args['num_servers'] = get_num_servers()
@@ -288,6 +290,8 @@ def indexRange(name, options, cluster_args, client_args):
         cluster_args['master_args'] = '--maxCores 2 --totalMasterMemory 1500'
     if cluster_args['timeout'] < 360:
         cluster_args['timeout'] = 360
+    # Force num_clients = 1
+    cluster_args['num_clients'] = 1
 
     if '--numObjects' not in client_args:
         client_args['--numObjects'] = 1000
