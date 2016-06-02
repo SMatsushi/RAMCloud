@@ -250,10 +250,13 @@ ReplicatedSegment::close()
     // no chance to clear it, which breaks calls to free().
     if (getCommitted().open && followingSegment)
         followingSegment->precedingSegmentOpenCommitted = true;
-    if (getCommitted().close && followingSegment) {
-        followingSegment->precedingSegmentCloseCommitted = true;
-        // Don't poke at potentially non-existent segments later.
-        followingSegment = NULL;
+    if (getCommitted().close) {
+        const_cast<Segment*>(segment)->closedCommitted = true;
+        if (followingSegment) {
+            followingSegment->precedingSegmentCloseCommitted = true;
+            // Don't poke at potentially non-existent segments later.
+            followingSegment = NULL;
+        }
     }
     schedule();
 
@@ -534,8 +537,14 @@ ReplicatedSegment::performTask()
     if (freeQueued && !recoveringFromLostOpenReplicas) {
         foreach (Replica& replica, replicas)
             performFree(replica);
-        if (!isScheduled()) // Everything is freed, destroy ourself.
+
+        // We assume that dataMutex is held by the caller so that the
+        // scheduled flag is read atomically with performing the destroy.
+        if (!isScheduled()) { // Everything is freed, destroy ourself.
             deleter.destroyAndFreeReplicatedSegment(this);
+            // Return here to prevent use of invalid member variables
+            return;
+        }
     } else if (!freeQueued) {
         foreach (Replica& replica, replicas)
             performWrite(replica);
@@ -755,10 +764,13 @@ ReplicatedSegment::performWrite(Replica& replica)
                 }
                 if (getCommitted().open && followingSegment)
                     followingSegment->precedingSegmentOpenCommitted = true;
-                if (getCommitted().close && followingSegment) {
-                    followingSegment->precedingSegmentCloseCommitted = true;
-                    // Don't poke at potentially non-existent segments later.
-                    followingSegment = NULL;
+                if (getCommitted().close) {
+                    const_cast<Segment*>(segment)->closedCommitted = true;
+                    if (followingSegment) {
+                        followingSegment->precedingSegmentCloseCommitted = true;
+                        // Don't poke at potentially non-existent segments later
+                        followingSegment = NULL;
+                    }
                 }
             } catch (const ServerNotUpException& e) {
                 // Retry; wait for BackupFailureMonitor to call

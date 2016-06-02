@@ -4,10 +4,10 @@ SERVER_SRCFILES := \
 		   src/BackupStorage.cc \
 		   src/InMemoryStorage.cc \
 		   src/LockTable.cc \
+		   src/MultiFileStorage.cc \
 		   src/PriorityTaskQueue.cc \
 		   src/RecoverySegmentBuilder.cc \
 		   src/Server.cc \
-		   src/SingleFileStorage.cc \
 		   $(NULL)
 
 SERVER_OBJFILES := $(SERVER_SRCFILES)

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2015 Stanford University
+/* Copyright (c) 2010-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any purpose
  * with or without fee is hereby granted, provided that the above copyright
@@ -117,7 +117,7 @@ TcpTransport::TcpTransport(Context* context,
     }
 
     // Arrange to be notified whenever anyone connects to listenSocket.
-    acceptHandler.construct(listenSocket, *this);
+    acceptHandler.construct(listenSocket, this);
 }
 
 /**
@@ -153,16 +153,16 @@ TcpTransport::closeSocket(int fd) {
 /**
  * Constructor for Sockets.
  */
-TcpTransport::Socket::Socket(int fd, TcpTransport& transport, sockaddr_in& sin)
+TcpTransport::Socket::Socket(int fd, TcpTransport* transport, sockaddr_in& sin)
     : transport(transport)
-    , id(transport.nextSocketId)
+    , id(transport->nextSocketId)
     , rpc(NULL)
     , ioHandler(fd, transport, this)
     , rpcsWaitingToReply()
     , bytesLeftToSend(0)
     , sin(sin)
 {
-    transport.nextSocketId++;
+    transport->nextSocketId++;
 }
 
 /**
@@ -170,12 +170,12 @@ TcpTransport::Socket::Socket(int fd, TcpTransport& transport, sockaddr_in& sin)
  */
 TcpTransport::Socket::~Socket() {
     if (rpc != NULL) {
-        transport.serverRpcPool.destroy(rpc);
+        transport->serverRpcPool.destroy(rpc);
     }
     while (!rpcsWaitingToReply.empty()) {
         TcpServerRpc& rpc = rpcsWaitingToReply.front();
         rpcsWaitingToReply.pop_front();
-        transport.serverRpcPool.destroy(&rpc);
+        transport->serverRpcPool.destroy(&rpc);
     }
 }
 
@@ -189,8 +189,8 @@ TcpTransport::Socket::~Socket() {
  * \param transport
  *      The TcpTransport that manages this socket.
  */
-TcpTransport::AcceptHandler::AcceptHandler(int fd, TcpTransport& transport)
-    : Dispatch::File(transport.context->dispatch, fd,
+TcpTransport::AcceptHandler::AcceptHandler(int fd, TcpTransport* transport)
+    : Dispatch::File(transport->context->dispatch, fd,
             Dispatch::FileEvent::READABLE)
     , transport(transport)
 {
@@ -212,7 +212,7 @@ TcpTransport::AcceptHandler::handleFileEvent(int events)
     struct sockaddr_in sin;
     socklen_t socklen = sizeof(sin);
 
-    int acceptedFd = sys->accept(transport.listenSocket,
+    int acceptedFd = sys->accept(transport->listenSocket,
                                  reinterpret_cast<sockaddr*>(&sin),
                                  &socklen);
     if (acceptedFd < 0) {
@@ -241,10 +241,10 @@ TcpTransport::AcceptHandler::handleFileEvent(int events)
         // (so we don't get repeated errors).
         LOG(ERROR, "error in TcpTransport::AcceptHandler accepting "
                 "connection for '%s': %s",
-                transport.locatorString.c_str(), strerror(errno));
+                transport->locatorString.c_str(), strerror(errno));
         setEvents(0);
-        sys->close(transport.listenSocket);
-        transport.listenSocket = -1;
+        sys->close(transport->listenSocket);
+        transport->listenSocket = -1;
         return;
     }
 
@@ -258,11 +258,11 @@ TcpTransport::AcceptHandler::handleFileEvent(int events)
     // At this point we have successfully opened a client connection.
     // Save information about it and create a handler for incoming
     // requests.
-    if (transport.sockets.size() <=
+    if (transport->sockets.size() <=
             static_cast<unsigned int>(acceptedFd)) {
-        transport.sockets.resize(acceptedFd + 1);
+        transport->sockets.resize(acceptedFd + 1);
     }
-    transport.sockets[acceptedFd] = new Socket(acceptedFd, transport, sin);
+    transport->sockets[acceptedFd] = new Socket(acceptedFd, transport, sin);
 }
 
 /**
@@ -276,9 +276,9 @@ TcpTransport::AcceptHandler::handleFileEvent(int events)
  *      Socket object corresponding to fd.
  */
 TcpTransport::ServerSocketHandler::ServerSocketHandler(int fd,
-                                                       TcpTransport& transport,
+                                                       TcpTransport* transport,
                                                        Socket* socket)
-    : Dispatch::File(transport.context->dispatch, fd,
+    : Dispatch::File(transport->context->dispatch, fd,
                      Dispatch::FileEvent::READABLE)
     , fd(fd)
     , transport(transport)
@@ -301,20 +301,32 @@ TcpTransport::ServerSocketHandler::ServerSocketHandler(int fd,
 void
 TcpTransport::ServerSocketHandler::handleFileEvent(int events)
 {
-    Socket* socket = transport.sockets[fd];
+    // The following variables are copies of data from this object;
+    // they are needed to safely detect socket closure below.
+    TcpTransport* transport = this->transport;
+    int socketFd = fd;
+    Socket* socket = transport->sockets[socketFd];
     assert(socket != NULL);
     try {
         if (events & Dispatch::FileEvent::READABLE) {
             if (socket->rpc == NULL) {
-                socket->rpc = transport.serverRpcPool.construct(socket,
+                socket->rpc = transport->serverRpcPool.construct(socket,
                                                                  fd, transport);
             }
             if (socket->rpc->message.readMessage(fd)) {
                 // The incoming request is complete; pass it off for servicing.
                 TcpServerRpc *rpc = socket->rpc;
                 socket->rpc = NULL;
-                transport.context->workerManager->handleRpc(rpc);
+                transport->context->workerManager->handleRpc(rpc);
             }
+        }
+        // Check to see if this socket got closed due to an error in the
+        // read handler; if so, it's neither necessary nor safe to continue
+        // in this method. Note: the check for closure must be done without
+        // accessing any fields in this object, since the object may have been
+        // destroyed and its memory recycled.
+        if (socket != transport->sockets[socketFd]) {
+            return;
         }
         if (events & Dispatch::FileEvent::WRITABLE) {
             while (true) {
@@ -332,12 +344,12 @@ TcpTransport::ServerSocketHandler::handleFileEvent(int events)
                 // The current reply is finished; start the next one, if
                 // there is one.
                 socket->rpcsWaitingToReply.pop_front();
-                transport.serverRpcPool.destroy(&rpc);
+                transport->serverRpcPool.destroy(&rpc);
                 socket->bytesLeftToSend = -1;
             }
         }
     } catch (TransportException& e) {
-        transport.closeSocket(fd);
+        transport->closeSocket(fd);
     }
 }
 
@@ -547,7 +559,7 @@ TcpTransport::IncomingMessage::readMessage(int fd) {
         }
 
         if ((buffer == NULL) && (session != NULL)) {
-            buffer = session->findRpc(header);
+            buffer = session->findRpc(&header);
         }
         if (buffer == NULL)
             messageLength = 0;
@@ -599,7 +611,7 @@ TcpTransport::IncomingMessage::readMessage(int fd) {
  * \throw TransportException
  *      There was a problem that prevented us from creating the session.
  */
-TcpTransport::TcpSession::TcpSession(TcpTransport& transport,
+TcpTransport::TcpSession::TcpSession(TcpTransport* transport,
         const ServiceLocator* serviceLocator,
         uint32_t timeoutMs)
     : transport(transport)
@@ -611,7 +623,7 @@ TcpTransport::TcpSession::TcpSession(TcpTransport& transport,
     , current(NULL)
     , message()
     , clientIoHandler()
-    , alarm(transport.context->sessionAlarmTimer, this,
+    , alarm(transport->context->sessionAlarmTimer, this,
             (timeoutMs != 0) ? timeoutMs : DEFAULT_TIMEOUT_MS)
 {
     setServiceLocator(serviceLocator->getOriginalString());
@@ -634,14 +646,43 @@ TcpTransport::TcpSession::TcpSession(TcpTransport& transport,
                 getServiceLocator().c_str()), errno);
     }
 
+    // Check to see if we accidentally connected to ourself. This can
+    // happen if the target server is on the same machine and has
+    // crashed, so that it is no longer using its port. If this
+    // happens our local socket (fd) might end up reusing that same port,
+    // in which case we will connect to ourselves. If this happens,
+    // abort this connection (it will get retried, at which point a
+    // different port will get selected).
+    struct sockaddr cAddr;
+    socklen_t cAddrLen = sizeof(cAddr);
+    // Read address information associated with our local socket.
+    if (sys->getsockname(fd, &cAddr, &cAddrLen)) {
+        sys->close(fd);
+        fd = -1;
+        LOG(WARNING, "TcpTransport failed to get client socket info");
+        throw TransportException(HERE,
+                "TcpTransport failed to get client socket info", errno);
+    }
+    IpAddress sourceIp(&cAddr);
+    IpAddress destinationIp(serviceLocator);
+    if (sourceIp.toString().compare(destinationIp.toString()) == 0) {
+        sys->close(fd);
+        fd = -1;
+        LOG(WARNING, "TcpTransport connected to itself %s",
+                sourceIp.toString().c_str());
+        throw TransportException(HERE, format(
+                "TcpTransport connected to itself %s",
+                sourceIp.toString().c_str()));
+    }
+
     // Disable the hideous Nagle algorithm, which will delay sending small
     // messages in some situations.
     int flag = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
     /// Arrange for notification whenever the server sends us data.
-    Dispatch::Lock lock(transport.context->dispatch);
-    clientIoHandler.construct(fd, *this);
+    Dispatch::Lock lock(transport->context->dispatch);
+    clientIoHandler.construct(fd, this);
     message.construct(static_cast<Buffer*>(NULL), this);
 }
 
@@ -670,7 +711,7 @@ TcpTransport::TcpSession::cancelRequest(RpcNotifier* notifier)
         if (rpc.notifier == notifier) {
             rpcsWaitingForResponse.erase(
                     rpcsWaitingForResponse.iterator_to(rpc));
-            transport.clientRpcPool.destroy(&rpc);
+            transport->clientRpcPool.destroy(&rpc);
             alarm.rpcFinished();
 
             // If we have started reading the response message,
@@ -686,7 +727,7 @@ TcpTransport::TcpSession::cancelRequest(RpcNotifier* notifier)
         if (rpc.notifier == notifier) {
             rpcsWaitingToSend.erase(
                     rpcsWaitingToSend.iterator_to(rpc));
-            transport.clientRpcPool.destroy(&rpc);
+            transport->clientRpcPool.destroy(&rpc);
             return;
         }
     }
@@ -706,17 +747,17 @@ TcpTransport::TcpSession::close()
         TcpClientRpc& rpc = rpcsWaitingForResponse.front();
         rpc.notifier->failed();
         rpcsWaitingForResponse.pop_front();
-        transport.clientRpcPool.destroy(&rpc);
+        transport->clientRpcPool.destroy(&rpc);
 
     }
     while (!rpcsWaitingToSend.empty()) {
         TcpClientRpc& rpc = rpcsWaitingToSend.front();
         rpc.notifier->failed();
         rpcsWaitingToSend.pop_front();
-        transport.clientRpcPool.destroy(&rpc);
+        transport->clientRpcPool.destroy(&rpc);
     }
     if (clientIoHandler) {
-        Dispatch::Lock lock(transport.context->dispatch);
+        Dispatch::Lock lock(transport->context->dispatch);
         clientIoHandler.destroy();
     }
 }
@@ -736,9 +777,9 @@ TcpTransport::TcpSession::close()
  *      that the input message should be dropped.
  */
 Buffer*
-TcpTransport::TcpSession::findRpc(Header& header) {
+TcpTransport::TcpSession::findRpc(Header* header) {
     foreach (TcpClientRpc& rpc, rpcsWaitingForResponse) {
-        if (rpc.nonce == header.nonce) {
+        if (rpc.nonce == header->nonce) {
             current = &rpc;
             return rpc.response;
         }
@@ -780,7 +821,7 @@ TcpTransport::TcpSession::sendRequest(Buffer* request, Buffer* response,
         return;
     }
     alarm.rpcStarted();
-    TcpClientRpc* rpc = transport.clientRpcPool.construct(request, response,
+    TcpClientRpc* rpc = transport->clientRpcPool.construct(request, response,
             notifier, serial);
     serial++;
     if (!rpcsWaitingToSend.empty()) {
@@ -821,8 +862,8 @@ TcpTransport::TcpSession::sendRequest(Buffer* request, Buffer* response,
  *      The TcpSession that is controlling this request and its response.
  */
 TcpTransport::ClientSocketHandler::ClientSocketHandler(int fd,
-        TcpSession& session)
-    : Dispatch::File(session.transport.context->dispatch, fd,
+        TcpSession* session)
+    : Dispatch::File(session->transport->context->dispatch, fd,
                      Dispatch::FileEvent::READABLE)
     , fd(fd)
     , session(session)
@@ -844,40 +885,40 @@ TcpTransport::ClientSocketHandler::handleFileEvent(int events)
 {
     try {
         if (events & Dispatch::FileEvent::READABLE) {
-            if (session.message->readMessage(fd)) {
+            if (session->message->readMessage(fd)) {
                 // This RPC is finished.
-                if (session.current != NULL) {
-                    session.rpcsWaitingForResponse.erase(
-                            session.rpcsWaitingForResponse.iterator_to(
-                            *session.current));
-                    session.alarm.rpcFinished();
-                    session.current->notifier->completed();
-                    session.transport.clientRpcPool.destroy(session.current);
-                    session.current = NULL;
+                if (session->current != NULL) {
+                    session->rpcsWaitingForResponse.erase(
+                            session->rpcsWaitingForResponse.iterator_to(
+                            *session->current));
+                    session->alarm.rpcFinished();
+                    session->current->notifier->completed();
+                    session->transport->clientRpcPool.destroy(session->current);
+                    session->current = NULL;
                 }
-                session.message.construct(static_cast<Buffer*>(NULL), &session);
+                session->message.construct(static_cast<Buffer*>(NULL), session);
             }
         }
         if (events & Dispatch::FileEvent::WRITABLE) {
-            while (!session.rpcsWaitingToSend.empty()) {
-                TcpClientRpc& rpc = session.rpcsWaitingToSend.front();
-                session.bytesLeftToSend = TcpTransport::sendMessage(
-                        session.fd, rpc.nonce, rpc.request,
-                        session.bytesLeftToSend);
-                if (session.bytesLeftToSend != 0) {
+            while (!session->rpcsWaitingToSend.empty()) {
+                TcpClientRpc& rpc = session->rpcsWaitingToSend.front();
+                session->bytesLeftToSend = TcpTransport::sendMessage(
+                        session->fd, rpc.nonce, rpc.request,
+                        session->bytesLeftToSend);
+                if (session->bytesLeftToSend != 0) {
                     return;
                 }
                 // The current RPC is finished; start the next one, if
                 // there is one.
-                session.rpcsWaitingToSend.pop_front();
-                session.rpcsWaitingForResponse.push_back(rpc);
+                session->rpcsWaitingToSend.pop_front();
+                session->rpcsWaitingForResponse.push_back(rpc);
                 rpc.sent = true;
-                session.bytesLeftToSend = -1;
+                session->bytesLeftToSend = -1;
             }
             setEvents(Dispatch::FileEvent::READABLE);
         }
     } catch (TransportException& e) {
-        session.abort();
+        session->abort();
     }
 }
 
@@ -886,7 +927,7 @@ void
 TcpTransport::TcpServerRpc::sendReply()
 {
     try {
-        Socket* socket = transport.sockets[fd];
+        Socket* socket = transport->sockets[fd];
 
         // It's possible that our fd has been closed (or even reused for a
         // new connection); if so, just discard the RPC without sending
@@ -909,19 +950,19 @@ TcpTransport::TcpServerRpc::sendReply()
             }
         }
     } catch (TransportException& e) {
-        transport.closeSocket(fd);
+        transport->closeSocket(fd);
     }
 
     // The whole response was sent immediately (this should be the
     // common case).  Recycle the RPC object.
-    transport.serverRpcPool.destroy(this);
+    transport->serverRpcPool.destroy(this);
 }
 
 // See Transport::ServerRpc::getclientServiceLocator for documentation.
 string
 TcpTransport::TcpServerRpc::getClientServiceLocator()
 {
-    Socket* socket = transport.sockets[fd];
+    Socket* socket = transport->sockets[fd];
     return format("tcp:host=%s,port=%hu", inet_ntoa(socket->sin.sin_addr),
         NTOHS(socket->sin.sin_port));
 }

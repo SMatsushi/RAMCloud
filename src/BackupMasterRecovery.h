@@ -30,6 +30,21 @@ namespace RAMCloud {
 class BackupReplicaMetadata;
 
 /**
+  * This class represents a mechanism for deleting other tasks. After it is
+  * scheduled, the target task should never again be scheduled. It lives in
+  * this file because it is currently used only by BackupMasterRecovery.
+  */
+class TaskKiller : public Task {
+  PUBLIC:
+    TaskKiller(TaskQueue& taskQueue, Task* taskToKill);
+    void performTask();
+  PRIVATE:
+    Task* taskToKill;
+    DISALLOW_COPY_AND_ASSIGN(TaskKiller);
+};
+
+
+/**
  * All aspects of a single recovery of a crashed master including algorithms
  * and state. This includes both phases of recovery: discovery of log
  * data and replicas by the coordinator and collection of objects by the
@@ -77,6 +92,7 @@ class BackupMasterRecovery : public Task {
                          uint64_t recoveryId,
                          ServerId crashedMasterId,
                          uint32_t segmentSize);
+    ~BackupMasterRecovery();
     void start(const std::vector<BackupStorage::FrameRef>& frames,
                Buffer* buffer,
                StartResponse* response);
@@ -287,13 +303,6 @@ class BackupMasterRecovery : public Task {
     bool startCompleted;
 
     /**
-     * If true inidcates that this recovery should clean up and release
-     * all reousrces and delete itself on the next call to performTask().
-     * Set by free() which also schedules this task to be invoked.
-     */
-    bool freeQueued;
-
-    /**
      * Times each recovery.
      */
     Tub<CycleCounter<RawMetric>> recoveryTicks;
@@ -323,8 +332,36 @@ class BackupMasterRecovery : public Task {
      * buildRecoverySegments().
      */
     bool testingSkipBuild;
+
+    /**
+     * The Task that is scheduled to delete this BackupMasterRecovery when it
+     * is no longer needed.
+     */
+    TaskKiller destroyer;
+
+    /**
+     * When this flag is set, a deletion task has been enqueued, and this objct
+     * should cease to reschedule itself.
+     */
+    bool pendingDeletion;
+
+    /**
+     * This SpinLock is used to ensure that pendingDeletion is set atomically
+     * with the schedule of destroyer. Otherwise, we may get into the following
+     * scenario:
+     * 1. performTask reads the flag as clear
+     * 2. free() function sets the flag.
+     * 3. free() function enqueues the deletion task.
+     * 4. performTask schedules itself.
+     *
+     * Given that only one task can be executed at a time, we can share the
+     * same lock across multiple tasks.
+     */
+    static SpinLock deletionMutex;
+
     DISALLOW_COPY_AND_ASSIGN(BackupMasterRecovery);
 };
+
 
 /**
  * Metadata stored along with each replica on storage.
