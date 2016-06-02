@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015 Stanford University
+/* Copyright (c) 2011-2016 Stanford University
  * Copyright (c) 2011 Facebook
  *
  * Permission to use, copy, modify, and distribute this software for any
@@ -35,6 +35,9 @@
 #else
 #include <cstdatomic>
 #endif
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "Common.h"
@@ -116,6 +119,21 @@ double atomicIntInc()
     uint64_t start = Cycles::rdtsc();
     for (int i = 0; i < count; i++) {
          prevValue = value.inc(prevValue);
+    }
+    uint64_t stop = Cycles::rdtsc();
+    // printf("Final value: %d\n", prevValue);
+    return Cycles::toSeconds(stop - start)/count;
+}
+
+// Measure the cost of std::atomic<int>::fetch_add with relaxed memory order.
+double cppAtomicIntInc()
+{
+    int count = 1000000;
+    std::atomic<int> value(11);
+    int prevValue = 1;
+    uint64_t start = Cycles::rdtsc();
+    for (int i = 0; i < count; i++) {
+        prevValue = value.fetch_add(prevValue, std::memory_order_relaxed);
     }
     uint64_t stop = Cycles::rdtsc();
     // printf("Final value: %d\n", prevValue);
@@ -636,6 +654,21 @@ double functionCall()
     return Cycles::toSeconds(stop - start)/count;
 }
 
+// Measure the cost of generating a random number between 0 and i
+double generateRandomNumber() {
+    int count = 100000;
+    uint64_t x = 0;
+
+    uint64_t start = Cycles::rdtsc();
+    for (int i = 1; i < count + 1; ++i) {
+        x += randomNumberGenerator(i);
+    }
+    uint64_t stop = Cycles::rdtsc();
+    discard(&x);
+
+    return Cycles::toSeconds(stop - start)/count;
+}
+
 // Measure the cost of generating a 100-byte random string.
 double genRandomString() {
     int count = 100000;
@@ -1008,7 +1041,7 @@ double perfCyclesToSeconds()
 }
 
 // Measure the cost of the prefetch instruction.
-double prefetch()
+double perfPrefetch()
 {
     uint64_t totalTicks = 0;
     int count = 10;
@@ -1035,6 +1068,48 @@ double prefetch()
         prefetch(&buf[192], 64);
     }
     return Cycles::toSeconds(totalTicks) / count / 16;
+}
+
+// This function runs the second thread for pingConditionVar.
+void pingConditionVarWorker(std::mutex* mutex,
+        std::condition_variable* condition1,
+        std::condition_variable* condition2, bool* finished)
+{
+    std::unique_lock<std::mutex> guard(*mutex);
+    while (!*finished) {
+        condition2->notify_one();
+        condition1->wait(guard);
+    }
+}
+
+// Measure the round-trip time for two threads to ping each other using
+// a pair of condition variables.
+double pingConditionVar()
+{
+    int count = 400000;
+    std::mutex mutex;
+    std::condition_variable condition1, condition2;
+    bool finished = false;
+    Tub<std::unique_lock<std::mutex>> guard;
+    guard.construct(mutex);
+
+    // First get the other thread running and warm up the caches.
+    std::thread thread(pingConditionVarWorker, &mutex, &condition1,
+            &condition2, &finished);
+    condition2.wait(*guard);
+
+    // Now run the test.
+    uint64_t start = Cycles::rdtsc();
+    for (int i = 0; i < count; i++) {
+        condition1.notify_one();
+        condition2.wait(*guard);
+    }
+    uint64_t stop = Cycles::rdtsc();
+    finished = true;
+    condition1.notify_one();
+    guard.destroy();
+    thread.join();
+    return Cycles::toSeconds(stop - start)/count;
 }
 
 // Measure the cost of reading the fine-grain cycle counter.
@@ -1175,8 +1250,7 @@ double serialize() {
 double sessionRefCount()
 {
     int count = 1000000;
-    Transport::Session session;
-    Transport::SessionRef ref1(&session);
+    Transport::SessionRef ref1(new Transport::Session);
     uint64_t start = Cycles::rdtsc();
     for (int i = 0; i < count; i++) {
         Transport::SessionRef ref2 = ref1;
@@ -1436,6 +1510,8 @@ TestInfo tests[] = {
      "Atomic<int>::compareExchange"},
     {"atomicIntInc", atomicIntInc,
      "Atomic<int>::inc"},
+    {"atomicIntInc", cppAtomicIntInc,
+     "std::atomic<int>::fetch_add"},
     {"atomicIntLoad", atomicIntLoad,
      "Atomic<int>::load"},
     {"atomicIntStore", atomicIntStore,
@@ -1506,6 +1582,8 @@ TestInfo tests[] = {
      "64-bit integer division instruction"},
     {"functionCall", functionCall,
      "Call a function that has not been inlined"},
+    {"generateRandomNumber", generateRandomNumber,
+     "Call to randomNumberGenerator(x)"},
     {"genRandomString", genRandomString,
      "Generate a random 100-byte value"},
     {"getThreadId", getThreadId,
@@ -1552,7 +1630,9 @@ TestInfo tests[] = {
      "Cost of new allocations from an ObjectPool (no destroys)"},
     {"objectPoolRealloc", objectPoolAlloc<int, true>,
      "Cost of ObjectPool allocation after destroying an object"},
-    {"prefetch", prefetch,
+    {"pingConditionVar", pingConditionVar,
+     "Round-trip ping with std::condition_variable"},
+    {"prefetch", perfPrefetch,
      "Prefetch instruction"},
     {"rdtsc", rdtscTest,
      "Read the fine-grain cycle counter"},
@@ -1560,10 +1640,8 @@ TestInfo tests[] = {
      "Sort a Segment full of avg. 100-byte Objects by age"},
     {"segmentIterator", segmentIterator<50, 150>,
      "Iterate a Segment full of avg. 100-byte Objects"},
-#if 0  // Causes a double free.
     {"sessionRefCount", sessionRefCount,
      "Create/delete SessionRef"},
-#endif
     {"serialize", serialize,
      "cpuid instruction for serialize"},
     {"sfence", sfence,

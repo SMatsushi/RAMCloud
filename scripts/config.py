@@ -101,6 +101,7 @@ coordinator_port = 12246
 server_port = 12247
 second_backup_port = 12248
 
+<<<<<<< HEAD
 if cluster_type == 'atom_cluster':
     default_disk1 = '-f /var/ramcloud/backup/backup1.db'
     default_disk2 = '-f /var/ramcloud/backup/backup2.db'
@@ -117,6 +118,11 @@ else:
     # Command-line argument specifying where the second backup should
     # store its segment replicas.
     default_disk2 = '-f /dev/sdb2'
+    # Update for multi-file storage - not used.
+    # Command-line argument specifying where the server should store the segment
+    # replicas when two devices are used.
+    #
+    #  default_disk2 = '-f /dev/sda2,/dev/sdb2'
 
     # default option of disjunct flag
     default_disjunct = False

@@ -45,6 +45,9 @@ ifeq ($(ZOOKEEPER),yes)
 # ZOOKEEPER_LIB ?= -lzookeeper_mt
 ZOOKEEPER_LIB ?= /usr/local/lib/libzookeeper_mt.a
 ZOOKEEPER_DIR ?= /usr/local/zookeeper-3.4.5
+# master
+# ZOOKEEPER_LIB ?= -lzookeeper_mt
+# ZOOKEEPER_DIR ?= /usr/share/zookeeper
 else
 ZOOKEEPER_LIB :=
 ZOOKEEPER_DIR :=
@@ -171,7 +174,6 @@ DPDK ?= no
 # DPDK
 ifeq ($(DPDK),yes)
 ## conflict at master and huawei-dpdk rebaase
-# <<<<<<< HEAD
 # 
 # INCLUDES += -Idpdk/build/include
 ## Note: --whole-archive is necessary to make sure that all of the facilities
@@ -182,7 +184,6 @@ ifeq ($(DPDK),yes)
 # COMFLAGS += -DDPDK -Dtypeof=__typeof__
 ## Needed as of DPDK 1.8; remove if later versions fix the problem.
 # CXXWARNS := $(CXXWARNS) -Wno-literal-suffix
-## =======
 RTE_TARGET  ?= x86_64-native-linuxapp-gcc
 COMFLAGS    += -DDPDK -Dtypeof=__typeof__
 

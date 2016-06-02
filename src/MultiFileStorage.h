@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2015 Stanford University
+/* Copyright (c) 2010-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -13,8 +13,8 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef RAMCLOUD_SINGLEFILESTORAGE_H
-#define RAMCLOUD_SINGLEFILESTORAGE_H
+#ifndef RAMCLOUD_MULTIFILESTORAGE_H
+#define RAMCLOUD_MULTIFILESTORAGE_H
 
 #include <stack>
 
@@ -25,37 +25,30 @@
 namespace RAMCloud {
 
 /**
- * A BackupStorage backend which treats a file or disk device as a single
- * array of bytes, storing segments at each multiple of the size of a segment.
+ * A BackupStorage backend which divides replica data between one or more files
+ * or disk devices. Clients interact with this class primarily through Frame
+ * objects (see Frame documentation below). Using multiple disks provides more
+ * storage capacity and faster read/write speeds than a single disk.
  */
-class SingleFileStorage : public BackupStorage {
+class MultiFileStorage : public BackupStorage {
   public:
     /// See bufferDeleter below.
     struct BufferDeleter {
-        explicit BufferDeleter(SingleFileStorage* storage);
+        explicit BufferDeleter(MultiFileStorage* storage);
         void operator()(void* buffer);
 
-        /// SingleFileStorage which houses the pool where buffers are returned.
-        SingleFileStorage* storage;
+        /// MultiFileStorage which houses the pool where buffers are returned.
+        MultiFileStorage* storage;
     };
 
     typedef std::unique_ptr<void, BufferDeleter> BufferPtr;
 
     /**
-     * Represents a region of the file on storage which holds a single replica.
-     * Frames manage the details of moving replica data to and from disk and
-     * manage buffers for doing so as well. SingleFileStorage keeps exactly one
-     * frame for each space on storage where it holds (or could hold) a replica.
-     * Frames get reused for different replicas making a frame something of a
-     * state machine.
-     *
-     * Backups open() frames, append() data, and then close() them. When the
-     * replica is no longer needed free() releases the frame for reuse by
-     * another replica, for which, the same cycle will be repeated.
-     * See SingleFileStorage::open() to allocate and open a Frame.
-     *
-     * If a master crashes backups use load() to access the replica data for
-     * recovery.
+     * Represents both in-memory and on-disk storage of a replica. After opened,
+     * a Frame remains associated with the same replica for the lifetime of that 
+     * replica. Frames are divided into framelets, which are the units that 
+     * exist on individual files. See MultiFileStorage::bytesInFramelet() for
+     * information on how Frames are divided into framelets.
      */
     class Frame : public BackupStorage::Frame
                 , public PriorityTask
@@ -63,7 +56,7 @@ class SingleFileStorage : public BackupStorage {
       PUBLIC:
         typedef std::unique_lock<std::mutex> Lock;
 
-        Frame(SingleFileStorage* storage, size_t frameIndex);
+        Frame(MultiFileStorage* storage, size_t frameIndex);
         ~Frame();
 
         void schedule(Priority priority);
@@ -101,12 +94,11 @@ class SingleFileStorage : public BackupStorage {
         bool isSynced() const;
 
         /// Storage where this frame resides.
-        SingleFileStorage* storage;
+        MultiFileStorage* storage;
 
         /**
-         * Identifies a frame in storage and maps it to a region of a file.
-         * SingleFileStorage keeps all its frames in-order and back-to-back in
-         * a file starting at index 0.
+         * Identifies a frame in storage. See offsetOfFramelet() for details on
+         * how this index is used to map to regions of the storage files.
          */
         const size_t frameIndex;
 
@@ -176,8 +168,7 @@ class SingleFileStorage : public BackupStorage {
         /// Bytes of #appendedMetadata that contain valid data to be preserved.
         size_t appendedMetadataLength;
 
-        /**
-         * Revision number for the metadata that was appeneded. Used to ensure
+        /* Revision number for the metadata that was appeneded. Used to ensure
          * that the metadata updates that happen while prior metadata is being
          * flushed to storage eventually make it to storage.
          */
@@ -216,18 +207,18 @@ class SingleFileStorage : public BackupStorage {
         static bool testingSkipRealIo;
 
         // ONLY for open() and isSynced(); please try not to touch other
-        // details of frames in SingleFileStorage (or elsewhere).
-        friend class SingleFileStorage;
+        // details of frames in MultiFileStorage (or elsewhere).
+        friend class MultiFileStorage;
         DISALLOW_COPY_AND_ASSIGN(Frame);
     };
 
-    SingleFileStorage(size_t segmentSize,
-                      size_t frameCount,
-                      size_t writeRateLimit,
-                      size_t maxNonVolatileBuffers,
-                      const char* filePath,
-                      int openFlags = 0);
-    ~SingleFileStorage();
+    MultiFileStorage(size_t segmentSize,
+                     size_t frameCount,
+                     size_t writeRateLimit,
+                     size_t maxNonVolatileBuffers,
+                     const char* filePaths,
+                     int openFlags = 0);
+    ~MultiFileStorage();
 
     FrameRef open(bool sync);
     uint32_t benchmark(BackupStrategy backupStrategy);
@@ -258,16 +249,17 @@ class SingleFileStorage : public BackupStorage {
     enum { METADATA_SIZE = BLOCK_SIZE };
 
   PRIVATE:
-    off_t offsetOfFrame(size_t frameIndex) const;
-    off_t offsetOfMetadataFrame(size_t frameIndex) const;
+    size_t bytesInFramelet(size_t fileIndex) const;
+    off_t offsetOfFramelet(size_t frameIndex) const;
+    off_t offsetOfFrameMetadata(size_t frameIndex) const;
     off_t offsetOfSuperblockFrame(size_t superblockIndex) const;
-    void unlockedRead(Frame::Lock& lock, void* buf, size_t count, off_t offset,
-                      bool usingDevNull) const;
-    void unlockedWrite(Frame::Lock& lock, void* buf, size_t count, off_t offset,
-                       void* metadataBuf, size_t metadataCount,
-                       off_t metadataOffset) const;
+    void unlockedRead(Frame::Lock& lock, void* buf, size_t frameIndex,
+                      bool usingDevNull);
+    void unlockedWrite(Frame::Lock& lock, void* buf, size_t count,
+                       size_t frameIndex, off_t offsetInFrame,
+                       void* metadataBuf, size_t metadataCount);
 
-    void reserveSpace();
+    void reserveSpace(int fd);
     Tub<Superblock> tryLoadSuperblock(uint32_t superblockFrame);
 
     /// Protects concurrent operations on storage and all of its frames.
@@ -288,10 +280,11 @@ class SingleFileStorage : public BackupStorage {
     uint32_t lastSuperblockFrame;
 
     /**
-     * A frame for each a region of the file on storage which holds a replica.
+     * A frame for each a region of the files on storage which hold a replica.
      * Frames get reused for different replicas making a frame something of a
      * state machine, but are all created and destroyed along with the
-     * storage instance.
+     * storage instance. See bytesInFramelet() for details on how frames are
+     * divided between files.
      */
     std::deque<Frame> frames;
 
@@ -313,20 +306,17 @@ class SingleFileStorage : public BackupStorage {
     /// Extra flags for use while opening filePath (e.g. O_DIRECT | O_SYNC).
     int openFlags;
 
-    /// The file descriptor of the storage file.
-    int fd;
+    /**
+     * The file descriptors of the storage files. See bytesInFramelet() for
+     * details on how data is divided between files.
+     */
+    std::vector<int> fds;
 
     /// Set to true if the filePath issued to the constructor was "/dev/null".
     /// We need to keep track of this since /dev/null will readily take any
     /// bytes written to it, but does not return anything, which breaks the
     /// initial "disk" benchmark.
     const bool usingDevNull;
-
-    /**
-     * Filename if none was specified. If set the file is deleted when this
-     * instance is destroyed. Useful for testing.
-     */
-    char* tempFilePath;
 
     /**
      * Tracks number of non-volatile buffers currently in use for data
@@ -344,10 +334,10 @@ class SingleFileStorage : public BackupStorage {
     size_t maxWriteBuffers;
 
     /**
-     * Returns buffers allocated with SingleFileStorage::allocateBuffer()
+     * Returns buffers allocated with MultiFileStorage::allocateBuffer()
      * to a pool, or if there are already plenty of buffers
      * it returns it to the OS (which will unmap it).
-     * Should only be called by SingleFileStorage::BufferPtr objects.
+     * Should only be called by MultiFileStorage::BufferPtr objects.
      */
     BufferDeleter bufferDeleter;
 
@@ -358,7 +348,7 @@ class SingleFileStorage : public BackupStorage {
      */
     std::stack<void*, std::vector<void*>> buffers;
 
-    DISALLOW_COPY_AND_ASSIGN(SingleFileStorage);
+    DISALLOW_COPY_AND_ASSIGN(MultiFileStorage);
 };
 
 } // namespace RAMCloud

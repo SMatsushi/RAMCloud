@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2015 Stanford University
+/* Copyright (c) 2010-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -13,13 +13,15 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
+#include <aio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
 
-#include "SingleFileStorage.h"
+#include "MultiFileStorage.h"
+#include "BackupMasterRecovery.h"
 #include "Buffer.h"
 #include "Crc32C.h"
 #include "ClientException.h"
@@ -52,22 +54,22 @@ enum { MAX_POOLED_BUFFERS = 128 };
  */
 enum { INIT_POOLED_BUFFERS = MAX_POOLED_BUFFERS };
 
-// --- SingleFileStorage::Frame ---
+// --- MultiFileStorage::Frame ---
 
-bool SingleFileStorage::Frame::testingSkipRealIo = false;
+bool MultiFileStorage::Frame::testingSkipRealIo = false;
 
 /**
- * Create a Frame associated with a particular region of the file on storage.
- * Only called when SingleFileStorage is constructed. After construction Frames
+ * Create a Frame associated with a particular region of the storage files.
+ * Only called when MultiFileStorage is constructed. After construction Frames
  * can be used in one of two ways:
  * 1) loadMetadata() can be called to reload the metadata from the associated
  *    frame. Used when backups restart to determine which replicas they have.
  * 2) (1) can be skipped, and instead open() can be called. Data/metadata in the
- *    frame will (eventually) be lost/replaced. Used when backups restart and
- *    wish to ignore all replicas on storage or if they intend to wipe the
- *    storage.
+ *    frame will (eventually) be lost/replaced. Used when new replicas are
+ *    written, and when backups restart and wish to ignore all replicas on
+ *    storage or if they intend to wipe the storage.
  */
-SingleFileStorage::Frame::Frame(SingleFileStorage* storage, size_t frameIndex)
+MultiFileStorage::Frame::Frame(MultiFileStorage* storage, size_t frameIndex)
     : PriorityTask(storage->ioQueue)
     , storage(storage)
     , frameIndex(frameIndex)
@@ -96,7 +98,7 @@ SingleFileStorage::Frame::Frame(SingleFileStorage* storage, size_t frameIndex)
     memset(appendedMetadata.get(), '\0', METADATA_SIZE);
 }
 
-SingleFileStorage::Frame::~Frame()
+MultiFileStorage::Frame::~Frame()
 {
     deschedule();
 }
@@ -106,7 +108,7 @@ SingleFileStorage::Frame::~Frame()
  * implementation. Use the method below.
  */
 void
-SingleFileStorage::Frame::schedule(Priority priority)
+MultiFileStorage::Frame::schedule(Priority priority)
 {
     DIE("Unsafe use of base class schedule, use schedule(Lock&, Priority)");
 }
@@ -136,7 +138,7 @@ SingleFileStorage::Frame::schedule(Priority priority)
  *      need to get it to secondary storage ASAP.
  */
 void
-SingleFileStorage::Frame::schedule(Lock& lock, Priority priority)
+MultiFileStorage::Frame::schedule(Lock& lock, Priority priority)
 {
     scheduledInEpoch = epoch;
     PriorityTask::schedule(priority);
@@ -153,7 +155,7 @@ SingleFileStorage::Frame::schedule(Lock& lock, Priority priority)
  * rpc, so this is a fine proxy.
  */
 bool
-SingleFileStorage::Frame::wasAppendedToByCurrentProcess()
+MultiFileStorage::Frame::wasAppendedToByCurrentProcess()
 {
     return appendedToByCurrentProcess;
 }
@@ -166,10 +168,10 @@ SingleFileStorage::Frame::wasAppendedToByCurrentProcess()
  * constructed (NOT opened), before any methods are called on it.
  */
 void
-SingleFileStorage::Frame::loadMetadata()
+MultiFileStorage::Frame::loadMetadata()
 {
-    const size_t metadataStart = storage->offsetOfMetadataFrame(frameIndex);
-    ssize_t r = pread(storage->fd, appendedMetadata.get(), METADATA_SIZE,
+    const size_t metadataStart = storage->offsetOfFrameMetadata(frameIndex);
+    ssize_t r = pread(storage->fds[0], appendedMetadata.get(), METADATA_SIZE,
                       metadataStart);
     if (r == -1) {
         DIE("Failed to read metadata stored in frame %lu: %s, "
@@ -189,13 +191,13 @@ SingleFileStorage::Frame::loadMetadata()
  * replica) metadata.
  * Warning: Concurrent calls to append modify the metadata that the return
  * of this method points to. In practice it should only be called when the
- * frame isn't accepting appends (either it was just constructed or one of 
+ * frame isn't accepting appends (either it was just constructed or one of
  * close, load, or free has already been called on it). Used only during
  * backup restart and master recovery to extract details about the replica
  * in this frame without loading the frame.
  */
 const void*
-SingleFileStorage::Frame::getMetadata()
+MultiFileStorage::Frame::getMetadata()
 {
     return appendedMetadata.get();
 }
@@ -210,7 +212,7 @@ SingleFileStorage::Frame::getMetadata()
  * this frame is recycled for use with another replica (via open()).
  */
 void
-SingleFileStorage::Frame::startLoading()
+MultiFileStorage::Frame::startLoading()
 {
     Lock lock(storage->mutex);
     if (loadRequested)
@@ -226,7 +228,7 @@ SingleFileStorage::Frame::startLoading()
  * startLoading() or load() hasn't been called.
  */
 bool
-SingleFileStorage::Frame::isLoaded()
+MultiFileStorage::Frame::isLoaded()
 {
     Lock _(storage->mutex);
     return loadRequested && buffer;
@@ -243,7 +245,7 @@ SingleFileStorage::Frame::isLoaded()
  * this frame is recycled for use with another replica (via open()).
  */
 void*
-SingleFileStorage::Frame::load()
+MultiFileStorage::Frame::load()
 {
     startLoading();
     while (true) {
@@ -266,7 +268,7 @@ SingleFileStorage::Frame::load()
  * Must only be called after a replica has been fully loaded.
  */
 void
-SingleFileStorage::Frame::unload()
+MultiFileStorage::Frame::unload()
 {
     Lock lock(storage->mutex);
     assert(loadRequested);
@@ -304,7 +306,7 @@ SingleFileStorage::Frame::unload()
  *      is NULL.
  */
 void
-SingleFileStorage::Frame::append(Buffer& source,
+MultiFileStorage::Frame::append(Buffer& source,
                                  size_t sourceOffset,
                                  size_t length,
                                  size_t destinationOffset,
@@ -376,7 +378,7 @@ SingleFileStorage::Frame::append(Buffer& source,
  * case recovery has already started for them so they are likely already dead.
  */
 void
-SingleFileStorage::Frame::close()
+MultiFileStorage::Frame::close()
 {
     Lock lock(storage->mutex);
     if (isClosed)
@@ -411,7 +413,7 @@ SingleFileStorage::Frame::close()
  * since loads require writes to finish first.
  */
 void
-SingleFileStorage::Frame::performTask()
+MultiFileStorage::Frame::performTask()
 {
     Lock lock(storage->mutex);
     if (epoch != scheduledInEpoch)
@@ -437,7 +439,7 @@ SingleFileStorage::Frame::performTask()
  * operation for the completes.
  */
 void
-SingleFileStorage::Frame::free()
+MultiFileStorage::Frame::free()
 {
     Lock lock(storage->mutex);
     while (performingIo) {
@@ -476,16 +478,21 @@ SingleFileStorage::Frame::free()
 
 // See BackupStorage.h for documentation.
 void
-SingleFileStorage::Frame::reopen(size_t length)
+MultiFileStorage::Frame::reopen(size_t length)
 {
-    assert(!isOpen && !isClosed);
+    // The frame could be open or closed depending on state when it crashed
     load();
 
     Lock _(storage->mutex);
     appendedLength = length;
     committedLength = length;
     isOpen = true;
+    isClosed = false;
     loadRequested = false;
+    if (!isWriteBuffer) {
+        isWriteBuffer = true;
+        storage->writeBuffersInUse++;
+    }
 }
 
 // - private -
@@ -507,7 +514,7 @@ SingleFileStorage::Frame::reopen(size_t length)
  *      recently enqueued metadata are durable on storage.
  */
 void
-SingleFileStorage::Frame::open(bool sync)
+MultiFileStorage::Frame::open(bool sync)
 {
     Lock _(storage->mutex);
     if (isOpen || isClosed)
@@ -531,70 +538,176 @@ SingleFileStorage::Frame::open(bool sync)
 }
 
 /**
- * Wrapper for pread that releases \a lock during IO and DIEs on any problem.
- * If useDevNull is true, this method does not consider short reads to be a
- * "problem".
+ * Performs all necessary IO operations to read a particular frame into memory.
+ * This method DIEs on any problems, and releases #lock during IO.
+ *
+ * \param lock
+ *     Lock on the storage mutex which must be held before calling. This lock
+ *     is released during IO and reacquired at the end of the method.
+ * \param buf
+ *     Pointer to the buffer that the Frame's data will be written to. Must
+ *     be large enough to hold an entire segment.
+ * \param frameIndex
+ *     Identifies which Frame to fetch from disk.
+ * \param usingDevNull
+ *     If true, short reads will not be considered an error. If false, short
+ *     reads cause the method to DIE.
  */
 void
-SingleFileStorage::unlockedRead(Frame::Lock& lock, void* buf, size_t count,
-                                off_t offset, bool usingDevNull) const
+MultiFileStorage::unlockedRead(Frame::Lock& lock, void* buf, size_t frameIndex,
+                               bool usingDevNull)
 {
     lock.unlock();
-    ssize_t r;
-    {
-        CycleCounter<RawMetric> _(&metrics->backup.storageReadTicks);
-        r = pread(fd, buf, count, offset);
-        PerfStats::threadStats.backupReadActiveCycles += _.stop();
+    CycleCounter<RawMetric> _(&metrics->backup.storageReadTicks);
+
+    // Use asynchronous IO to initiate concurrent IO operations on all of the
+    // storage files to read the replica in parallel.
+    // Keep one control block for each file.
+    struct aiocb cbs[fds.size()];
+    // Linux documentation recommends clearing control blocks before use.
+    memset(cbs, 0, sizeof(struct aiocb) * fds.size());
+    size_t frameletStart = offsetOfFramelet(frameIndex);
+    for (size_t fileIndex = 0; fileIndex < fds.size(); fileIndex++) {
+        size_t frameletSize = bytesInFramelet(fileIndex);
+        struct aiocb* cb = &cbs[fileIndex];
+        cb->aio_fildes = fds[fileIndex];
+        cb->aio_offset = frameletStart;
+        cb->aio_buf = static_cast<char*>(buf) + (frameletSize * fileIndex);
+        cb->aio_nbytes = frameletSize;
+        aio_read(cb);
     }
-    if (r == -1) {
-        DIE("Failed to read replica: %s, "
-            "starting offset in file %lu, length %lu",
-            strerror(errno), offset, count);
-    } else if (r != downCast<ssize_t>(count)) {
-        if (!usingDevNull)
-            DIE("Failure performing asynchronous IO (short read: "
-                "wanted %lu, got %lu at offset %lu; errno %d: %s)",
-                count, r, offset, errno, strerror(errno));
-        else
-            assert(errno == 0);
+
+    // Wait for all of the IO operations to complete.
+    for (size_t i = 0; i < fds.size(); i++) {
+        struct aiocb* cb = &cbs[i];
+        aio_suspend(&cb, 1, NULL);
+        ssize_t r = aio_return(cb);
+        if (r == -1) {
+            DIE("Failed to read replica: %s, "
+                "reading %lu bytes from backup file %lu at offset %lu.",
+                strerror(aio_error(cb)), cb->aio_nbytes, i,
+                cb->aio_offset);
+        } else if (r != downCast<ssize_t>(cb->aio_nbytes)) {
+            if (!usingDevNull)
+                DIE("Failure performing asynchronous IO (short read: "
+                    "wanted %lu, got %lu at offset %lu in file %lu; "
+                    "errno %d: %s)",
+                    cb->aio_nbytes, r, cb->aio_offset, i,
+                    aio_error(cb), strerror(aio_error(cb)));
+            else
+                assert(aio_error(cb) == 0);
+        }
     }
+
+    PerfStats::threadStats.backupReadActiveCycles += _.stop();
     lock.lock();
 }
 
 /**
- * Wrapper for pwrite that releases \a lock during IO and DIEs on any problem.
- * Performs two pwrites back-to-back: one for new data being appended and
- * another to write out the most recently appended metadata block.
+ * Performs all necessary IO operations to write #count bytes to the Frame
+ * identified by #frameIndex, beginning at #offsetInFrame bytes. Also writes
+ * out the most recently appended metadata block. DIEs on any problem and
+ * releases #lock during IO.
+ *
+ * \param lock
+ *     Lock on the storage mutex which must be held before calling. This lock
+ *     is released during IO and reacquired at the end of the method.
+ * \param buf
+ *     Pointer to the buffer that contains the data to write to disk.
+ * \param count
+ *     Number of bytes to write.
+ * \param frameIndex
+ *     Identifies which Frame to write to.
+ * \param offsetInFrame
+ *     Offset into the Frame to write to. (Note that the caller does NOT have
+ *     to worry about framelet offsets.)
+ * \param metadataBuf
+ *     Pointer to the buffer that contains the metadata to write to disk.
+ * \param metadataCount
+ *     Number of bytes of metadata to write.
  */
 void
-SingleFileStorage::unlockedWrite(Frame::Lock& lock, void* buf, size_t count,
-                                 off_t offset, void* metadataBuf,
-                                 size_t metadataCount,
-                                 off_t metadataOffset) const
+MultiFileStorage::unlockedWrite(Frame::Lock& lock, void* buf, size_t count,
+                                size_t frameIndex, off_t offsetInFrame,
+                                void* metadataBuf, size_t metadataCount)
 {
     CycleCounter<RawMetric> writeTicks(&metrics->backup.storageWriteTicks);
     lock.unlock();
-    ssize_t r = pwrite(fd, buf, count, offset);
-    if (r == -1) {
-        DIE("Failed to write to replica: %s, "
-            "starting offset in file %lu, length %lu",
-            strerror(errno), offset, count);
-    } else if (r != downCast<ssize_t>(count)) {
-        DIE("Unexpectedly short write to replica, starting offset in "
-            "file %lu, length %lu, result %lu",
-             offset, count, r);
+
+    size_t remaining = count;
+    off_t frameletStart = offsetOfFramelet(frameIndex);
+    off_t offsetInFramelet = offsetInFrame;
+
+    // Use asynchronous IO to initiate concurrent IO operations on all of the
+    // storage files to read the replica in parallel.
+    // Keep one control block for each file, plus an extra (the last one) for
+    // metadata.
+    struct aiocb cbs[fds.size() + 1];
+    // Linux documentation recommends clearing control blocks before use. Also,
+    // zeroing everything out makes it safe to call aio_suspend on any control
+    // blocks that don't end up being used.
+    memset(cbs, 0, sizeof(struct aiocb) * (fds.size() + 1));
+    for (size_t fileIndex = 0; remaining > 0; fileIndex++) {
+        size_t frameletSize = bytesInFramelet(fileIndex);
+        if (static_cast<size_t>(offsetInFramelet) > frameletSize) {
+            // The offset that we want to write is past this framelet.
+            offsetInFramelet -= frameletSize;
+            continue;
+        }
+
+        size_t bytesToWrite = std::min(frameletSize - offsetInFramelet,
+                                       remaining);
+        struct aiocb* cb = &cbs[fileIndex];
+        cb->aio_fildes = fds[fileIndex];
+        cb->aio_offset = frameletStart + offsetInFramelet;
+        cb->aio_buf = buf;
+        cb->aio_nbytes = bytesToWrite;
+        aio_write(cb);
+
+        remaining -= bytesToWrite;
+        buf = static_cast<char*>(buf) + bytesToWrite;
+        offsetInFramelet = 0;
     }
-    r = pwrite(fd, metadataBuf, metadataCount, metadataOffset);
+
+    // Metadata gets its own IO operation.
+    struct aiocb* metadataCb = &cbs[fds.size()];
+    metadataCb->aio_fildes = fds[0];
+    metadataCb->aio_offset = offsetOfFrameMetadata(frameIndex);
+    metadataCb->aio_buf = metadataBuf;
+    metadataCb->aio_nbytes = metadataCount;
+    aio_write(metadataCb);
+
+    // Wait for all of the IO operations to complete.
+    for (size_t i = 0; i < fds.size() + 1; i++) {
+        struct aiocb* cb = &cbs[i];
+        aio_suspend(&cb, 1, NULL);
+        ssize_t r = aio_return(cb);
+        if (r == -1) {
+            if (i == fds.size())
+                DIE("Failed to write metadata for replica: %s, "
+                    "writing %lu bytes to backup file %lu at offset %lu.",
+                    strerror(aio_error(cb)),
+                    cb->aio_nbytes, i, cb->aio_offset);
+            else
+                DIE("Failed to write replica: %s, "
+                    "writing %lu bytes to backup file %lu at offset %lu.",
+                    strerror(aio_error(cb)),
+                    cb->aio_nbytes, i, cb->aio_offset);
+        } else if (r != downCast<ssize_t>(cb->aio_nbytes)) {
+            if (i == fds.size())
+                DIE("Unexpectedly short write to metadata for replica, "
+                    "file 0 at offset %lu, "
+                    "expected length %lu, actual write length %lu",
+                    cb->aio_offset, cb->aio_nbytes, r);
+            else
+                DIE("Unexpectedly short write to replica, "
+                    "file %lu at offset %lu, "
+                    "expected length %lu, actual write length %lu",
+                    i, cb->aio_offset, cb->aio_nbytes, r);
+        }
+    }
+
     PerfStats::threadStats.backupWriteActiveCycles += writeTicks.stop();
-    if (r == -1) {
-        DIE("Failed to write metadata for replica: %s, "
-            "starting offset in file %lu, length %lu",
-            strerror(errno), metadataOffset, metadataCount);
-    } else if (r != downCast<ssize_t>(metadataCount)) {
-        DIE("Unexpectedly short write metadata for replica, starting offset "
-            "in file %lu, expected length %lu, actual write length %ld",
-            metadataOffset, metadataCount, r);
-    }
     // Reduce our bandwidth (if so configured) by delaying this operation.
     CycleCounter<RawMetric> _(&metrics->backup.storageWriteTicks);
     sleepToThrottleWrites(count + metadataCount, writeTicks.stop());
@@ -609,7 +722,7 @@ namespace {
 size_t
 roundDown(size_t offset)
 {
-    return offset & ~(SingleFileStorage::BLOCK_SIZE - 1);
+    return offset & ~(MultiFileStorage::BLOCK_SIZE - 1);
 }
 
 /**
@@ -619,9 +732,9 @@ roundDown(size_t offset)
 size_t
 roundUp(size_t length)
 {
-    return (length + (SingleFileStorage::BLOCK_SIZE - 1)) /
-           SingleFileStorage::BLOCK_SIZE *
-           SingleFileStorage::BLOCK_SIZE;
+    return (length + (MultiFileStorage::BLOCK_SIZE - 1)) /
+           MultiFileStorage::BLOCK_SIZE *
+           MultiFileStorage::BLOCK_SIZE;
 }
 }
 
@@ -632,29 +745,28 @@ roundUp(size_t length)
  * invariants need to be rechecked after the call to unlockedRead.
  */
 void
-SingleFileStorage::Frame::performRead(Lock& lock)
+MultiFileStorage::Frame::performRead(Lock& lock)
 {
     assert(loadRequested);
     BufferPtr buffer = storage->allocateBuffer();
-    const size_t frameStart = storage->offsetOfFrame(frameIndex);
 
     if (testingSkipRealIo) {
-        TEST_LOG("count %lu offset %lu", storage->segmentSize, frameStart);
+        TEST_LOG("count %lu frameIndex %lu", storage->segmentSize, frameIndex);
     } else {
         ++metrics->backup.storageReadCount;
         metrics->backup.storageReadBytes += storage->segmentSize;
         ++PerfStats::threadStats.backupReadOps;
         PerfStats::threadStats.backupReadBytes += storage->segmentSize;
         // Lock released during this call; assume any field could have changed.
-        storage->unlockedRead(lock, buffer.get(),
-                     storage->segmentSize, frameStart, storage->usingDevNull);
+        storage->unlockedRead(lock, buffer.get(), frameIndex,
+                              storage->usingDevNull);
     }
 
     assert(!this->buffer);
     this->buffer = std::move(buffer);
 }
 
-/**
+/*
  * Flush any appended data and the latest appended metadata to disk.
  * Requires #buffer to remain set for the duration of the operation, though
  * data can be appended to it concurrently. Releases the buffer if it won't
@@ -664,7 +776,7 @@ SingleFileStorage::Frame::performRead(Lock& lock)
  * invariants need to be rechecked after the call to unlockedWrite.
  */
 void
-SingleFileStorage::Frame::performWrite(Lock& lock)
+MultiFileStorage::Frame::performWrite(Lock& lock)
 {
     assert(buffer);
 
@@ -684,13 +796,9 @@ SingleFileStorage::Frame::performWrite(Lock& lock)
     memcpy(metadataBlock, appendedMetadata.get(), appendedMetadataLength);
     const size_t appendedMetadataVersion = this->appendedMetadataVersion;
 
-    const size_t frameStart = storage->offsetOfFrame(frameIndex);
-    const size_t metadataStart = storage->offsetOfMetadataFrame(frameIndex);
     if (testingSkipRealIo) {
-        TEST_LOG("sourceBufferOffset %lu count %lu offset %lu "
-                 "metadataOffset %lu",
-                 startOfFirstDirtyBlock, dirtyLength,
-                 frameStart + startOfFirstDirtyBlock, metadataStart);
+        TEST_LOG("sourceBufferOffset %lu count %lu frameIndex %lu",
+                 startOfFirstDirtyBlock, dirtyLength, frameIndex);
     } else {
         ++metrics->backup.storageWriteCount;
         metrics->backup.storageWriteBytes += dirtyLength;
@@ -698,8 +806,8 @@ SingleFileStorage::Frame::performWrite(Lock& lock)
         PerfStats::threadStats.backupWriteBytes += dirtyLength;
         // Lock released during this call; assume any field could have changed.
         storage->unlockedWrite(lock, firstDirtyBlock, dirtyLength,
-                      frameStart + startOfFirstDirtyBlock,
-                      metadataBlock, METADATA_SIZE, metadataStart);
+                               frameIndex, startOfFirstDirtyBlock,
+                               metadataBlock, METADATA_SIZE);
     }
 
     assert(buffer);
@@ -726,39 +834,39 @@ SingleFileStorage::Frame::performWrite(Lock& lock)
 
 /// Return true if all appended data and metadata have been flushed to storage.
 bool
-SingleFileStorage::Frame::isSynced() const
+MultiFileStorage::Frame::isSynced() const
 {
     return (appendedLength == committedLength) &&
            (appendedMetadataVersion == committedMetadataVersion);
 }
 
-// --- SingleFileStorage::BufferDeleter ---
+// --- MultiFileStorage::BufferDeleter ---
 
 /**
  * Create a functor that returns chunks of memory to #storage.buffers or
  * to the OS.
  *
  * \param storage
- *      SingleFileStorage to which returned buffers are pushed.
+ *      MultiFileStorage to which returned buffers are pushed.
  */
-SingleFileStorage::BufferDeleter::BufferDeleter(SingleFileStorage* storage)
+MultiFileStorage::BufferDeleter::BufferDeleter(MultiFileStorage* storage)
     : storage(storage)
 {
 }
 
 /**
- * Return a buffer allocated with SingleFileStorage::allocateBuffer().
+ * Return a buffer allocated with MultiFileStorage::allocateBuffer().
  * Returns the buffer to a pool, or if there are already plenty of buffers
  * it returns it to the OS (which will unmap it).
- * Should only be called by SingleFileStorage::BufferPtr objects.
+ * Should only be called by MultiFileStorage::BufferPtr objects.
  *
  * \param buffer
  *      Pointer to buffer which is being released by a
- *      SingleFileStorage::BufferPtr and should be returned to the pool or
+ *      MultiFileStorage::BufferPtr and should be returned to the pool or
  *      the OS.
  */
 void
-SingleFileStorage::BufferDeleter::operator()(void* buffer)
+MultiFileStorage::BufferDeleter::operator()(void* buffer)
 {
     if (buffer) {
         if (storage->buffers.size() >= MAX_POOLED_BUFFERS) {
@@ -769,10 +877,10 @@ SingleFileStorage::BufferDeleter::operator()(void* buffer)
     }
 }
 
-// --- SingleFileStorage ---
+// --- MultiFileStorage ---
 
 /**
- * Create a SingleFileStorage.
+ * Create a MultiFileStorage.
  *
  * \param segmentSize
  *      The size in bytes of the segments this storage will deal with.
@@ -785,22 +893,21 @@ SingleFileStorage::BufferDeleter::operator()(void* buffer)
  * \param maxWriteBuffers
  *      Limit on the number of segment replicas representing new data from
  *      masters that can be stored in memory at any given time.
- * \param filePath
- *      A filesystem path to the device or file where segments will be stored.
- *      If NULL then a temporary file in the system temp directory is created
- *      and it is deleted when this storage instance is destroyed. /dev/null
- *      may also be used if you never want to see your data again, even while
- *      the system is still running (that is, don't expect recoveries to work).
+ * \param filePathsStr
+ *      A comma-separated list of filesystem paths to the devices or files
+ *      where segments will be stored. /dev/null may also be used if you never
+ *      want to see your data again, even while the system is still running
+ *      (that is, don't expect recoveries to work).
  * \param openFlags
- *      Extra flags for use while opening filePath (default to 0, O_DIRECT may
- *      be used to disable the OS buffer cache.
+ *      Extra flags for use while opening files in filePathsStr (default to 0,
+ *      O_DIRECT may be used to disable the OS buffer cache.
  */
-SingleFileStorage::SingleFileStorage(size_t segmentSize,
-                                     size_t frameCount,
-                                     size_t writeRateLimit,
-                                     size_t maxWriteBuffers,
-                                     const char* filePath,
-                                     int openFlags)
+MultiFileStorage::MultiFileStorage(size_t segmentSize,
+                                   size_t frameCount,
+                                   size_t writeRateLimit,
+                                   size_t maxWriteBuffers,
+                                   const char* filePathsStr,
+                                   int openFlags)
     : BackupStorage(segmentSize, Type::DISK, writeRateLimit)
     , mutex()
     , ioQueue()
@@ -811,51 +918,59 @@ SingleFileStorage::SingleFileStorage(size_t segmentSize,
     , freeMap(frameCount)
     , lastAllocatedFrame(FreeMap::npos)
     , openFlags(openFlags)
-    , fd(-1)
-    , usingDevNull(filePath != NULL && string(filePath) == "/dev/null")
-    , tempFilePath()
+    , fds()
+    , usingDevNull(filePathsStr != NULL && string(filePathsStr) == "/dev/null")
     , writeBuffersInUse(0)
     , maxWriteBuffers(maxWriteBuffers)
     , bufferDeleter(this)
     , buffers()
 {
+    assert(filePathsStr);
+
     freeMap.set();
 
-    if (filePath == NULL || filePath[0] == '\0') {
-        tempFilePath =
-            strdup("/tmp/ramcloud-backup-storage-test-delete-this-XXXXXX");
-        fd = ::mkostemp(tempFilePath,
-                        O_CREAT | O_RDWR | openFlags);
-        filePath = tempFilePath;
-    } else {
-        // If we were given /dev/null (to take disk bandwidth out of the
-        // equation during testing/benchmarking), don't supply the O_DIRECT
-        // flag since it's not supported. Print an I-told-you-so while here.
-        if (usingDevNull) {
-            openFlags &= ~O_DIRECT;
-            LOG(WARNING, "Using /dev/null to \"store\" your data. I hope you "
-                "know what you're doing!");
-        }
-        fd = ::open(filePath,
-                    O_CREAT | O_RDWR | openFlags,
-                    0666);
-    }
-    if (fd == -1) {
-        int e = errno;
-        LOG(ERROR, "Failed to open backup storage file %s: %s",
-            filePath, strerror(e));
-        throw BackupStorageException(HERE,
-              format("Failed to open backup storage file %s", filePath), e);
+    // If we were given /dev/null (to take disk bandwidth out of the
+    // equation during testing/benchmarking), don't supply the O_DIRECT
+    // flag since it's not supported. Print an I-told-you-so while here.
+    if (usingDevNull) {
+        openFlags &= ~O_DIRECT;
+        LOG(WARNING, "Using /dev/null to \"store\" your data. I hope you "
+            "know what you're doing!");
     }
 
-    // If its a regular file reserve space, otherwise
-    // assume its a device and we don't need to bother.
-    struct stat st;
-    int r = stat(filePath, &st);
-    if (r == -1)
-        return;
-    if (st.st_mode & S_IFREG)
-        reserveSpace();
+    std::string filePathsCopy(filePathsStr);
+    size_t filePathIndex = 0;
+    bool doneParsing = false;
+    while (!doneParsing) {
+        size_t commaIndex = filePathsCopy.find(',', filePathIndex);
+        if (commaIndex == std::string::npos) {
+            commaIndex = filePathsCopy.size();
+            doneParsing = true;
+        }
+        std::string filePath = filePathsCopy.substr(filePathIndex,
+                                                    commaIndex - filePathIndex);
+        int fd = ::open(filePath.c_str(), O_CREAT | O_RDWR | openFlags, 0666);
+        if (fd == -1) {
+            int e = errno;
+            LOG(ERROR, "Failed to open backup storage file %s: %s",
+                filePath.c_str(), strerror(e));
+            throw BackupStorageException(HERE,
+                format("Failed to open backup storage file %s",
+                       filePath.c_str()), e);
+        }
+        fds.push_back(fd);
+
+        // If its a regular file reserve space, otherwise
+        // assume its a device and we don't need to bother.
+        struct stat st;
+        int r = stat(filePath.c_str(), &st);
+        if (r == -1)
+            continue;
+        if (st.st_mode & S_IFREG)
+            reserveSpace(fd);
+
+        filePathIndex = commaIndex + 1;
+    }
 
     // The following line is completely black magic. I (stutsman) have no
     // idea why it improves things. As of 10/29/2012 removing the following
@@ -881,21 +996,21 @@ SingleFileStorage::SingleFileStorage(size_t segmentSize,
         frames.emplace_back(this, frame);
 
     ioQueue.start();
+
+    LOG(NOTICE, "Backup storage opened with %lu bytes available; allocated %lu "
+            "frame(s) across %lu file(s) with %lu bytes per frame",
+            frameCount * segmentSize, frameCount, fds.size(), segmentSize);
 }
 
-/// Close the file.
-SingleFileStorage::~SingleFileStorage()
+/// Close the files.
+MultiFileStorage::~MultiFileStorage()
 {
     ioQueue.halt();
 
-    int r = close(fd);
-    if (r == -1)
-        LOG(ERROR, "Couldn't close backup log");
-
-    if (tempFilePath) {
-        unlink(tempFilePath);
-        ::free(tempFilePath);
-        tempFilePath = NULL;
+    for (size_t i = 0; i < fds.size(); i++) {
+        int r = close(fds[i]);
+        if (r == -1)
+            LOG(ERROR, "Couldn't close backup log");
     }
 
     while (!buffers.empty()) {
@@ -910,8 +1025,8 @@ SingleFileStorage::~SingleFileStorage()
  * Caller must hold a lock on #mutex and must hold a lock on #mutex when
  * the returned pointer is destroyed or reset().
  */
-SingleFileStorage::BufferPtr
-SingleFileStorage::allocateBuffer()
+MultiFileStorage::BufferPtr
+MultiFileStorage::allocateBuffer()
 {
     if (buffers.empty()) {
         void* block = Memory::xmemalign(HERE, BUFFER_ALIGNMENT,
@@ -947,24 +1062,27 @@ SingleFileStorage::allocateBuffer()
  *      reference count drops to zero the frame will be freed for reuse with
  *      another replica.
  */
-SingleFileStorage::FrameRef
-SingleFileStorage::open(bool sync)
+MultiFileStorage::FrameRef
+MultiFileStorage::open(bool sync)
 {
     Lock lock(mutex);
-    if (writeBuffersInUse >= maxWriteBuffers) {
-        // Force the master to find some place else and/or backoff.
-        RAMCLOUD_CLOG(NOTICE, "Master tried to open a storage frame but %lu "
-            "frames already buffered; rejecting", writeBuffersInUse);
-        throw BackupOpenRejectedException(HERE);
-    }
     FreeMap::size_type next = freeMap.find_next(lastAllocatedFrame);
     if (next == FreeMap::npos) {
         next = freeMap.find_first();
         if (next == FreeMap::npos) {
-            RAMCLOUD_CLOG(NOTICE, "Master tried to open a storage frame "
-                "but there are no frames free; rejecting");
+            RAMCLOUD_CLOG(WARNING, "Master tried to open a storage frame "
+                "but there are no frames free (all %lu frames are in use); "
+                "rejecting", frameCount);
             throw BackupOpenRejectedException(HERE);
         }
+    }
+    if (writeBuffersInUse >= maxWriteBuffers) {
+        // Force the master to find some place else and/or backoff.
+        RAMCLOUD_CLOG(NOTICE, "Master tried to open a storage frame but "
+                "reached the maxNonVolatileBuffers limit of %lu (there are %lu "
+                "frames already buffered); rejecting",
+                maxWriteBuffers, writeBuffersInUse);
+        throw BackupOpenRejectedException(HERE);
     }
     lastAllocatedFrame = next;
     size_t frameIndex = next;
@@ -983,7 +1101,7 @@ SingleFileStorage::open(bool sync)
  * wasting early segment frames on the disk which may be faster.
  */
 uint32_t
-SingleFileStorage::benchmark(BackupStrategy backupStrategy)
+MultiFileStorage::benchmark(BackupStrategy backupStrategy)
 {
     uint32_t r = BackupStorage::benchmark(backupStrategy);
     lastAllocatedFrame = FreeMap::npos;
@@ -998,16 +1116,17 @@ SingleFileStorage::benchmark(BackupStrategy backupStrategy)
  * replica) metadata.
  */
 size_t
-SingleFileStorage::getMetadataSize()
+MultiFileStorage::getMetadataSize()
 {
     return METADATA_SIZE;
 }
 
 /**
- * Marks ALL storage frames as allocated and blows away any in-memory copies
- * of metadata. This should only be performed at backup startup. The caller is
- * reponsible for freeing the frames if the metadata indicates the replica
- * data stored there isn't useful.
+ * Marks ALL storage frames as allocated, initializes frame state based on
+ * metadata if its metadata is valid, and blows away any in-memory copies of
+ * metadata. This should only be performed at backup startup. The caller is
+ * reponsible for freeing the frames if the metadata indicates the replica data
+ * stored there isn't useful.
  *
  * \return
  *      Pointer to every frame which has various uses depending on the
@@ -1016,7 +1135,7 @@ SingleFileStorage::getMetadataSize()
  *      metadata in the frame for potential use in future recoveries.
  */
 std::vector<BackupStorage::FrameRef>
-SingleFileStorage::loadAllMetadata()
+MultiFileStorage::loadAllMetadata()
 {
     std::vector<FrameRef> ret;
     ret.reserve(frames.size());
@@ -1024,6 +1143,23 @@ SingleFileStorage::loadAllMetadata()
         frame.loadMetadata();
         assert(freeMap[frame.frameIndex] == 1);
         freeMap[frame.frameIndex] = 0;
+
+        const BackupReplicaMetadata* metadata =
+                static_cast<const BackupReplicaMetadata*>(frame.getMetadata());
+        if (!metadata->checkIntegrity()) {
+            ret.push_back({&frame, BackupStorage::freeFrame});
+            continue;
+        }
+
+        frame.isClosed = metadata->closed;
+        frame.isOpen = !metadata->closed;
+        if (frame.isOpen) {
+            frame.isWriteBuffer = true;
+            writeBuffersInUse++;
+            frame.appendedLength = metadata->certificate.segmentLength;
+            frame.committedLength = metadata->certificate.segmentLength;
+        }
+
         ret.push_back({&frame, BackupStorage::freeFrame});
     }
     return ret;
@@ -1060,7 +1196,7 @@ SingleFileStorage::loadAllMetadata()
  *      and 0x3 skips both.
  */
 void
-SingleFileStorage::resetSuperblock(ServerId serverId,
+MultiFileStorage::resetSuperblock(ServerId serverId,
                                    const string& clusterName,
                                    const uint32_t frameSkipMask)
 {
@@ -1088,7 +1224,7 @@ SingleFileStorage::resetSuperblock(ServerId serverId,
         const uint32_t nextFrame = (lastSuperblockFrame + 1) % 2;
         if (!((frameSkipMask >> nextFrame) & 0x01)) {
             const uint64_t offset = offsetOfSuperblockFrame(nextFrame);
-            ssize_t r = pwrite(fd, block.get(), BLOCK_SIZE, offset);
+            ssize_t r = pwrite(fds[0], block.get(), BLOCK_SIZE, offset);
             // An accurate superblock is required to determine if replicas
             // should be preserved at startup.  Without it any replicas
             // written by this backup would be in jeopardy.
@@ -1099,7 +1235,7 @@ SingleFileStorage::resetSuperblock(ServerId serverId,
                 DIE("Short write while writing the backup superblock; "
                     "cannot continue safely");
             }
-            int s = fdatasync(fd);
+            int s = fdatasync(fds[0]);
             if (s == -1 && !usingDevNull) {
                 DIE("Failed to flush the backup superblock; "
                     "cannot continue safely: %s", strerror(errno));
@@ -1123,7 +1259,7 @@ SingleFileStorage::resetSuperblock(ServerId serverId,
  *      traces of life on storage.
  */
 BackupStorage::Superblock
-SingleFileStorage::loadSuperblock()
+MultiFileStorage::loadSuperblock()
 {
     Tub<Superblock> left;
     Tub<Superblock> right;
@@ -1172,7 +1308,7 @@ SingleFileStorage::loadSuperblock()
  * if appends continue concurrent with this call.
  */
 void
-SingleFileStorage::quiesce()
+MultiFileStorage::quiesce()
 {
     foreach (const Frame& frame, frames) {
         uint64_t start = Cycles::rdtsc();
@@ -1199,7 +1335,7 @@ SingleFileStorage::quiesce()
  * confused for ones written by the starting up backup process.
  */
 void
-SingleFileStorage::fry()
+MultiFileStorage::fry()
 {
     Buffer empty;
     uint8_t zeroes[getMetadataSize()];
@@ -1214,44 +1350,76 @@ SingleFileStorage::fry()
 // - private -
 
 /**
- * Returns the offset into the file a particular frame starts at.
+ * Returns the number of bytes of data that any framelet of a particular file
+ * contains.
  *
- * \param frameIndex 
- *      Frame to find start of storage for in the file.
+ * Data is distributed between framelets as evenly as possible. Framelet sizes
+ * must be in increments of BLOCK_SIZE (for O_DIRECT). In the simple case
+ * (when segmentSize is evenly divisible into the same number of blocks per
+ * file), every framelet contains the same number of blocks of data. When this
+ * is not possible, the framelets of lower-indexed files contain one more block
+ * of data than those of higher-indexed files. To simplify offset calculations,
+ * that extra block is present in every framelet, but not used in the
+ * higher-indexed ones. A similar mechanism is used for superblocks and
+ * metadata. The first file contains all superblocks and metadata, but every
+ * file leaves empty space (at the beginning of the file for superblocks and
+ * after each framelet for metadata) for them in order to keep offsets uniform.
+ * This extra space is negligible compared to the size of a segment.
+ *
+ * \param fileIndex
+ *     File to find the number of bytes in a framelet for.
+ */
+size_t
+MultiFileStorage::bytesInFramelet(size_t fileIndex) const
+{
+    return fileIndex < (segmentSize / BLOCK_SIZE) % fds.size() ?
+        roundUp(segmentSize / fds.size()) : roundDown(segmentSize / fds.size());
+}
+
+/**
+ * Returns the offset into the files where the framelets associated with a
+ * particular frame start. This offset will be the same for every file. See
+ * bytesInFramelet() for details on how framelets are divided between files.
+ *
+ * \param frameIndex
+ *      Frame to find start of storage for in the files.
  */
 off_t
-SingleFileStorage::offsetOfFrame(size_t frameIndex) const
+MultiFileStorage::offsetOfFramelet(size_t frameIndex) const
 {
     const size_t firstFrameStart = offsetOfSuperblockFrame(2);
-    return firstFrameStart + frameIndex * (segmentSize + METADATA_SIZE);
+    return firstFrameStart +
+            frameIndex * (roundUp(segmentSize / fds.size()) + METADATA_SIZE);
 }
 
 /**
- * Returns the offset into the file the metadata for a particular frame
- * starts at.
+ * Returns the offset into the files where the metadata for a particular
+ * frame starts. See bytesInFramelet() for details on how metadata is divided
+ * between files.
  *
- * \param frameIndex 
- *      Frame to find start of storage for in the file.
+ * \param frameIndex
+ *      Frame to find start of metadata storage for in the files.
  */
 off_t
-SingleFileStorage::offsetOfMetadataFrame(size_t frameIndex) const
+MultiFileStorage::offsetOfFrameMetadata(size_t frameIndex) const
 {
-    const size_t frameStart = offsetOfFrame(frameIndex);
-    return frameStart + segmentSize;
+    const size_t frameStart = offsetOfFramelet(frameIndex);
+    return frameStart + roundUp(segmentSize / fds.size());
 }
 
 /**
- * Returns the offset into the file where a copy of the superblock may
- * be located.
+ * Returns the offset into the files where a copy of the superblock may
+ * be located. See bytesInFramelet() for details on how this data is divided
+ * between files.
  *
  * \param superblockIndex
- *      The superblock can be stored at two locations in the file.
+ *      The superblock can be stored at two locations in the files.
  *      Passing 0 returns the start of the first location,
  *      passing 1 returns the start of the second location,
  *      passing 2 returns the start of the first segment frame.
  */
 off_t
-SingleFileStorage::offsetOfSuperblockFrame(size_t superblockIndex) const
+MultiFileStorage::offsetOfSuperblockFrame(size_t superblockIndex) const
 {
     return superblockIndex *
            ((sizeof(Superblock) + BLOCK_SIZE - 1) / BLOCK_SIZE) *
@@ -1266,9 +1434,9 @@ SingleFileStorage::offsetOfSuperblockFrame(size_t superblockIndex) const
  *      If space for frameCount segments of segmentSize cannot be reserved.
  */
 void
-SingleFileStorage::reserveSpace()
+MultiFileStorage::reserveSpace(int fd)
 {
-    uint64_t logSpace = offsetOfFrame(frameCount);
+    uint64_t logSpace = offsetOfFramelet(frameCount);
 
     LOG(DEBUG, "Reserving %lu bytes of log space", logSpace);
     int r = ftruncate(fd, logSpace);
@@ -1288,11 +1456,11 @@ SingleFileStorage::reserveSpace()
  * \return
  *      The superblock stored at \a superblockFrame is returned if
  *      it was loaded the stored checksum was correct.  Otherwise,
- *      if there was a problem reading the file or the contents appears
+ *      if there was a problem reading the files or the contents appears
  *      to be damaged or incomplete the returned value is empty.
  */
 Tub<BackupStorage::Superblock>
-SingleFileStorage::tryLoadSuperblock(uint32_t superblockFrame)
+MultiFileStorage::tryLoadSuperblock(uint32_t superblockFrame)
 {
     Memory::unique_ptr_free block(
         Memory::xmemalign(HERE, BUFFER_ALIGNMENT, BLOCK_SIZE), std::free);
@@ -1301,7 +1469,7 @@ SingleFileStorage::tryLoadSuperblock(uint32_t superblockFrame)
         Crc32C::ResultType checksum;
     } __attribute__((packed));
     uint64_t offset = offsetOfSuperblockFrame(superblockFrame);
-    ssize_t r = pread(fd, block.get(), BLOCK_SIZE, offset);
+    ssize_t r = pread(fds[0], block.get(), BLOCK_SIZE, offset);
     if (r == -1) {
         LOG(NOTICE, "Couldn't read superblock from superblock frame %u: %s",
             superblockFrame, strerror(errno));

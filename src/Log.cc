@@ -211,6 +211,63 @@ Log::sync()
 }
 
 /**
+ * Ensures the given log entry is fully replicated to backups. It will return
+ * immediately if the entry is already replicated before. If the entry is not
+ * yet replicated, we sync all log appends in current head segment with backups.
+ *
+ * Like sync(), this method is also thread-safe.
+ */
+void
+Log::syncTo(Log::Reference reference)
+{
+    CycleCounter<uint64_t> __(&PerfStats::threadStats.logSyncCycles);
+    metrics.totalSyncCalls++;
+
+    LogSegment* segment = getSegment(reference);
+
+    // Fast-pass: check the log reference we want to sync is point to
+    //            a segment already closed and synced.
+    if (segment->closedCommitted.load(std::memory_order_relaxed)) {
+        TEST_LOG("sync not needed: entry is already replicated");
+        return;
+    }
+
+    // Calculate the desired syncedLength, which is the end location of the
+    // given log entry in terms of segment offset.
+    uint32_t offset = segment->getOffset(reference);
+    uint32_t lengthWithMetadata;
+    segment->getEntry(offset, NULL, &lengthWithMetadata);
+    uint32_t desiredSyncedLength = offset + lengthWithMetadata;
+
+    SpinLock::Guard _(syncLock);
+
+    // See if we still have work to do. It's possible that another thread
+    // already did the syncing we needed for us.
+    if (desiredSyncedLength > segment->syncedLength) {
+        Tub<SpinLock::Guard> lock;
+        lock.construct(appendLock);
+
+        // Get the latest segment length and certificate. This allows us to
+        // batch up other appends that came in while we were waiting.
+        SegmentCertificate certificate;
+        // If segment != head, segment must have been closed and its replication
+        // is queued already. Forcing sync of head segment will also make sure
+        // that the closed segment is fully replicated.
+        uint32_t appendedLength = head->getAppendedLength(&certificate);
+
+        // Drop the append lock. We don't want to block other appending
+        // threads while we sync.
+        lock.destroy();
+
+        head->replicatedSegment->sync(appendedLength, &certificate);
+        head->syncedLength = appendedLength;
+        TEST_LOG("log synced");
+        return;
+    }
+    TEST_LOG("sync not needed: entry is already replicated");
+}
+
+/**
  * Force the log to roll over to a new head and return the new log position.
  * At the instant of the new head segment's creation, it will have the highest
  * segment identifier in the log. The log is guaranteed to be synced to this

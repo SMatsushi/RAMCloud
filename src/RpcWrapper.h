@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2015 Stanford University
+/* Copyright (c) 2012-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -212,10 +212,12 @@ class RpcWrapper : public Transport::RpcNotifier {
     const char* stateString();
     bool waitInternal(Dispatch* dispatch, uint64_t abortTime = ~0UL);
 
-    /// Request and response messages.  In some cases the response buffer
-    /// is provided by the wrapper (e.g., for reads); if not, response refers
-    /// to defaultResponse.
+    /// Request message.
     Buffer request;
+    /// Response message.  In some cases the response buffer is provided by
+    /// the wrapper (e.g., for reads); if not, response refers to
+    /// defaultResponse. Guaranteed to be at least responseHeaderLength bytes
+    /// long when isReady returns true.
     Buffer* response;
 
     /// Storage to use for response if constructor was not given an explicit
@@ -235,11 +237,11 @@ class RpcWrapper : public Transport::RpcNotifier {
     uint64_t retryTime;
 
     /// Expected size of the response header, in bytes.
-    uint32_t responseHeaderLength;
+    const uint32_t responseHeaderLength;
 
     /// Response header; filled in by isReady, so that wrapper functions
     /// don't have to recompute it.  Guaranteed to actually refer to at
-    /// least responseHeaderLength bytes.
+    /// least responseHeaderLength bytes if the RPC succeeds.
     const WireFormat::ResponseCommon* responseHeader;
 
     DISALLOW_COPY_AND_ASSIGN(RpcWrapper);
