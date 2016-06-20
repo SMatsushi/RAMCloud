@@ -63,11 +63,11 @@ cperfTests=(         "basic" \
 
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
-## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk basic"
+# cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk basic"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk readDistRandom writeDistRandom readThroughput transaction_oneMaster"
 # cmd="mmfilter scripts/clusterperf.py --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk ${cperfTests[@]}"
-# cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk indexBasic"
-cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=1 --servers=10 --timeout=2000 --transport=basic+dpdk indexBasic"
+cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic"
+## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=1 --servers=10 --timeout=2000 --transport=basic+dpdk indexBasic"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic indexMultiple"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk transaction_oneMaster"
 # cmd="scripts/clusterperf.py -v --transport=basic+dpdk basic"
