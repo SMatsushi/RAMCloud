@@ -40,10 +40,12 @@ class TimeTrace {
     TimeTrace();
     ~TimeTrace();
     void record(uint64_t timestamp, const char* format, uint32_t arg0 = 0,
-            uint32_t arg1 = 0, uint32_t arg2 = 0, uint32_t arg3 = 0);
+                uint32_t arg1 = 0, uint32_t arg2 = 0, uint32_t arg3 = 0,
+                uint32_t arg4 = 0
+                );
     void record(const char* format, uint32_t arg0 = 0, uint32_t arg1 = 0,
-            uint32_t arg2 = 0, uint32_t arg3 = 0) {
-        record(Cycles::rdtsc(), format, arg0, arg1, arg2, arg3);
+                uint32_t arg2 = 0, uint32_t arg3 = 0, uint32_t arg4 = 0) {
+        record(Cycles::rdtsc(), format, arg0, arg1, arg2, arg3, arg4);
     }
     void printToLog();
     void printToLogBackground(Dispatch* dispatch);
@@ -91,6 +93,8 @@ class TimeTrace {
       uint32_t arg2;             // Argument that may be referenced by format
                                  // when printing out this event.
       uint32_t arg3;             // Argument that may be referenced by format
+                                 // when printing out this event.
+      uint32_t arg4;             // Argument that may be referenced by format
                                  // when printing out this event.
     };
 

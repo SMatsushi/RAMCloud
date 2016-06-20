@@ -33,6 +33,7 @@
 #include "Buffer.h"
 #include "Object.h"
 #include "ObjectManager.h"
+#include "TimeTrace.h"
 
 namespace RAMCloud {
 
@@ -43,6 +44,8 @@ namespace RAMCloud {
 typedef uint64_t NodeId;
 #define INVALID_NODEID (1)
 #define ROOT_ID 100
+
+extern TimeTrace traceI;
 
 /**
  * This structure stores a single mapping between a secondary index
@@ -1912,16 +1915,20 @@ PUBLIC:
      */
     void
     insert(const BtreeEntry entry) {
+        RAMCloud::traceI.record(Cycles::rdtsc(),"insert start");
         if (nextNodeId == ROOT_ID) {
             Buffer rootBuffer;
             LeafNode *root = rootBuffer.emplaceAppend<LeafNode>(&rootBuffer);
             root->insertAt(0, entry);
+            RAMCloud::traceI.record(Cycles::rdtsc(),"root insertAt");
             writeNode(root, ROOT_ID);
+            RAMCloud::traceI.record(Cycles::rdtsc(),"writenode");
             nextNodeId = ROOT_ID + 1;
             m_stats.leaves = 1;
         } else {
             ChildUpdateInfo info;
             insertDescend(ROOT_ID, entry, &info);
+            RAMCloud::traceI.record(Cycles::rdtsc(),"insertDescend");
 
             // Root node was split
             if (info.childSplit) {
@@ -1933,12 +1940,15 @@ PUBLIC:
                         info.newChild,
                         info.newChildId,
                         info.rightSiblingId);
+                RAMCloud::traceI.record(Cycles::rdtsc(),"newRoot insertAt");
                 writeNode(newRoot, ROOT_ID);
+                RAMCloud::traceI.record(Cycles::rdtsc(),"writeNode");
                 m_stats.innernodes++;
             }
         }
-
+        RAMCloud::traceI.record(Cycles::rdtsc(),"insert done");
         flush();
+        RAMCloud::traceI.record(Cycles::rdtsc(),"flushed");
         m_stats.itemcount++;
     }
 

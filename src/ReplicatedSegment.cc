@@ -18,8 +18,11 @@
 #include "ReplicatedSegment.h"
 #include "Segment.h"
 #include "ShortMacros.h"
+#include "TimeTrace.h"
 
 namespace RAMCloud {
+
+extern TimeTrace traceI;
 
 uint64_t ReplicatedSegment::recoveryStart = 0;
 
@@ -383,6 +386,7 @@ ReplicatedSegment::sync(uint32_t offset, SegmentCertificate* certificate)
     Lock syncLock(syncMutex);
     Tub<Lock> lock;
     lock.construct(dataMutex);
+    traceI.record(Cycles::rdtsc(),"ReplicatedSegment locked");
 
     // Definition of synced changes if this segment isn't durably closed
     // and is recovering from a lost replica.  In that case the data
@@ -402,7 +406,6 @@ ReplicatedSegment::sync(uint32_t offset, SegmentCertificate* certificate)
             }
         }
     }
-
     // If the caller did not provide the desired certificate, obtain the
     // latest one and use that.
     uint32_t appendedBytes = offset;
@@ -416,23 +419,68 @@ ReplicatedSegment::sync(uint32_t offset, SegmentCertificate* certificate)
         queued.bytes = appendedBytes;
         queuedCertificate = *certificate;
         schedule();
+        traceI.record(Cycles::rdtsc(),"scheduled replicas=%u",
+                      static_cast<uint32_t>(replicas.size()));
     }
 
     uint64_t syncStartTicks = Cycles::rdtsc();
+    uint32_t trial = 0;
+    uint32_t rFLOR, nLS, gCnc, gCbl;
+    int step = 1;
+    rFLOR = nLS = gCnc = gCbl = 0;
+    // use common variable defined in Common.h
+    debugXXX = syncStartTicks; 
     while (true) {
         taskQueue.performTask();
+	trial++;
         if (!recoveringFromLostOpenReplicas) {
             if (!normalLogSegment || precedingSegmentCloseCommitted) {
                 if (offset == ~0u) {
-                    if (getCommitted().close)
+                    if (getCommitted().close) {
                         return;
+                    } else {
+                        gCnc++;
+                    }
                 } else {
-                    if (getCommitted().bytes >= offset)
+                    uint32_t b = getCommitted().bytes;
+                    uint32_t thres =  offset * step / 10;
+                    if (b > thres) {
+                        step = (b * 10) / offset;
+                        thres =  offset * step / 10;
+                        traceI.record("getCommitted().bytes=%u > %u (step %u of %u) %d trial",
+                                      b, thres, step, offset, trial);
+                        traceI.record("replicas[0].bytes=%d [1].bytes=%d [2].bytes=%d",
+                                      replicas[0].isActive ? 
+                                      replicas[0].committed.bytes : -1,
+
+                                      replicas[1].isActive ? 
+                                      replicas[1].committed.bytes : -1,
+
+                                      replicas[2].isActive ? 
+                                      replicas[2].committed.bytes : -1);
+                        step++;
+                    }
+                    if (getCommitted().bytes >= offset) {
                         return;
+                    } else {
+                        gCbl++;
+                    }
                 }
+            } else {
+                nLS++;
             }
+        } else {
+            rFLOR++;
         }
-        double waited = Cycles::toSeconds(Cycles::rdtsc() - syncStartTicks);
+        uint64_t now = Cycles::rdtsc();
+        double waited = Cycles::toSeconds(now - syncStartTicks);
+        if (waited > 0.007) {
+ 	    traceI.record(Cycles::rdtsc(),"waited after %d trial, "
+                          "rFLOR=%u nLS=%u gCnc=%u gCbl=%u", trial,
+                          rFLOR, nLS, gCnc, gCbl);
+            // dumpProgress();
+            syncStartTicks = now;
+        }
         if (waited > 10) {
             LOG(WARNING, "Log write sync has taken over 10s; seems to "
                     "be stuck");
@@ -531,9 +579,13 @@ ReplicatedSegment::schedule()
  *    work couldn't be completed yet or work generated some new work
  *    which won't be done until a future time).
  */
+#define LONGWAIT 0.002   // 2 ms
 void
 ReplicatedSegment::performTask()
 {
+    uint64_t now;
+    double waited;
+
     if (freeQueued && !recoveringFromLostOpenReplicas) {
         foreach (Replica& replica, replicas)
             performFree(replica);
@@ -549,6 +601,15 @@ ReplicatedSegment::performTask()
         foreach (Replica& replica, replicas)
             performWrite(replica);
     }
+
+    //-
+    now = Cycles::rdtsc();
+    waited = Cycles::toSeconds(now - debugXXX);
+    if (waited > LONGWAIT) {
+        traceI.record("performTask::After perform Free");
+        debugXXX = now;
+    }
+    //-
 
     if (unopenedStartCycles != 0) {
         // The segment is not yet known to be fully open. Once it gets
@@ -582,6 +643,19 @@ ReplicatedSegment::performTask()
                     "replicationEpoch ok, lost open replica recovery "
                     "complete on segment %lu", segmentId);
                 recoveringFromLostOpenReplicas = false;
+                //-
+                now = Cycles::rdtsc();
+                waited = Cycles::toSeconds(now - debugXXX);
+                if (waited > LONGWAIT) {
+                    LOG(NOTICE,
+                        "replicationEpoch ok, lost open replica recovery "
+                        "complete on segment %lu", segmentId);
+                    
+                    traceI.record("performTask::isAtLast");
+                    debugXXX = now;
+                }
+                //-
+
                 // All done, don't reschedule.
             } else  {
                 // Now that the old head segment has been re-replicated and all
@@ -593,6 +667,17 @@ ReplicatedSegment::performTask()
                     "coordinator to ensure lost replicas will not be reused",
                     segmentId, queued.epoch);
                 replicationEpoch.updateToAtLeast(segmentId, queued.epoch);
+                //-
+                now = Cycles::rdtsc();
+                waited = Cycles::toSeconds(now - debugXXX);
+                if (waited > LONGWAIT) {
+                    LOG(NOTICE, "Updating replicationEpoch to %lu,%lu on "
+                        "coordinator to ensure lost replicas will not be reused",
+                        segmentId, queued.epoch);
+                    traceI.record("performTask::updating Epoch");
+                    debugXXX = now;
+                }
+                //-
                 schedule();
             }
         } else {
@@ -604,6 +689,8 @@ ReplicatedSegment::performTask()
             schedule();
         }
     }
+
+
     if (replicationCounter) {
         if (writeRpcsInFlight > 0) {
             if (!*replicationCounter)
@@ -612,6 +699,14 @@ ReplicatedSegment::performTask()
         } else {
                 replicationCounter->destroy();
         }
+        //-
+        now = Cycles::rdtsc();
+        waited = Cycles::toSeconds(now - debugXXX);
+        if (waited > LONGWAIT) {
+            traceI.record("performTask::replication Counter");
+            debugXXX = now;
+        }
+        //-
     }
 }
 

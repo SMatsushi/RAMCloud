@@ -50,8 +50,10 @@ ClientLeaseAgent::getLease()
     // Block waiting for the lease to become valid; should only occur if there
     // is a long gap between issuing RPCs that require a client lease (i.e
     // linearizable RPCs or transaction RPCs).
-    while (Cycles::rdtsc() > leaseExpirationCycles) {
-        RAMCLOUD_CLOG(NOTICE, "Blocked waiting for lease to renew.");
+    uint64_t cyc;
+    while ((cyc = Cycles::rdtsc()) > leaseExpirationCycles) {
+        RAMCLOUD_CLOG(NOTICE, "Blocked waiting for lease to renew."
+                      "rdtsc=%lu leaseExpCyc=%lu", cyc, leaseExpirationCycles);
 
         // Release lock so poller can execute.
         Unlock<SpinLock> _(mutex);
@@ -86,15 +88,25 @@ ClientLeaseAgent::poll()
      * if it detects that there are no unfinished rpcs that require a valid
      * lease.  This task is awakened by calls to getLease.
      */
+    double now, prev;
+    prev = Cycles::toSeconds(Cycles::rdtsc());
     if (!renewLeaseRpc) {
         lastRenewalTimeCycles = Cycles::rdtsc();
         uint64_t leaseId = lease.leaseId;
         renewLeaseRpc.construct(ramcloud->clientContext, leaseId);
+        now = Cycles::toSeconds(Cycles::rdtsc());
+        RAMCLOUD_CLOG(NOTICE, "Creation of renewLeaseRpc took %8.5f sec", now - prev);
     } else {
         if (!renewLeaseRpc->isReady()) {
             // Wait for rpc to become ready.
+            now = Cycles::toSeconds(Cycles::rdtsc());
+            if ((now - prev) > 0.5) {
+                RAMCLOUD_CLOG(NOTICE, "Waiting renewLeaseRpc gets ready for %8.5f sec", now - prev);
+            }
         } else {
             lease = renewLeaseRpc->wait();
+            now = Cycles::toSeconds(Cycles::rdtsc());
+            RAMCLOUD_CLOG(NOTICE, "Waited renewLeaseRpc for %8.5f sec", now - prev);
             renewLeaseRpc.destroy();
             // Use local rdtsc cycle time to estimate when the lease will expire
             // if the lease is not renewed.
@@ -113,6 +125,10 @@ ClientLeaseAgent::poll()
                             (leaseTermLen -
                             LeaseCommon::DANGER_THRESHOLD).toNanoseconds());
 
+            RAMCLOUD_CLOG(NOTICE, "Renewed LeaseExpiration = %16.3f sec in %8.5f sec", 
+                          Cycles::toSeconds(leaseExpirationCycles),
+                          Cycles::toSeconds(leaseExpirationCycles - Cycles::rdtsc()));
+                          
             assert(leaseTermLen >= LeaseCommon::RENEW_THRESHOLD);
             uint64_t renewCycleTime =
                     Cycles::fromNanoseconds(

@@ -3,12 +3,13 @@
 # Compile RAMCloud and Run Clusterperf.py basic for debugging
 
 CMDNAME=`basename $0`
-while getopts chp: OPT
+while getopts chop: OPT
 do
     case $OPT in
 	"c" ) flag_c="TRUE";;
+	"o" ) flag_o="TRUE";;
 	"p" ) flag_p="TRUE"; prefix=$OPTARG ;;
-	"h" ) echo "Usage: $CMDNAME [-c][-h][-p log_prefix]" 1>&2
+	"h" ) echo "Usage: $CMDNAME [-c][-h][-o][-p log_prefix]" 1>&2
             exit  ;;
     esac
 done
@@ -85,8 +86,16 @@ cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --ti
 # cmd="scripts/clusterperf.py -v --transport=tcp basic"
 
 echo $cmd
+if [ "$flag_o" = "TRUE" ]; then
+    echo "Running opfile on atom002"
+   # ssh atom002 opcontrol --start
+fi
 lrun $cmd
 lrun date
+if [ "$flag_o" = "TRUE" ]; then
+    echo "Summarizing result"
+   # ssh atom002 'opreport -c obj.new-dpdk/server > logs/oprofile.out'
+fi
 
 # mv multiple log dirs to the latest. For clusterperf...
 mv 20*.log logs/latest

@@ -57,6 +57,7 @@ namespace po = boost::program_options;
 #include "Util.h"
 #include "TimeTrace.h"
 #include "Transaction.h"
+#include "ClientException.h"
 
 using namespace RAMCloud;
 
@@ -695,21 +696,27 @@ timeIndexWrite(uint64_t tableId, uint8_t numKeys, KeyInfo *keyList,
 
     int warmups = static_cast<int>(numWarmups);
     int totalSamples = static_cast<int>(numSamples);
+
     for (int i = -warmups; i < totalSamples; i++) {
         bool warmup = i < 0;
         // sleep before first non-warmup
         if (i == 0)
             Cycles::sleep(100);
-
+        double dt;
         start = Cycles::rdtsc();
         cluster->write(tableId, numKeys, keyList, buf, length);
         if (!warmup)
-            writeTimes.at(i) = Cycles::toSeconds(Cycles::rdtsc() - start);
-
+            dt = writeTimes.at(i) = Cycles::toSeconds(Cycles::rdtsc() - start);
+#define DTHRES 0.01
+#define ERRTHRES 20  // abort after this many of slow accesses.
+        if (dt > DTHRES)
+            LOG(NOTICE, "Write(%d) took %.3f sec", i, dt);
         start = Cycles::rdtsc();
         cluster->write(tableId, numKeys, keyList, buf, length);
         if (!warmup)
-            overWriteTimes.at(i) = Cycles::toSeconds(Cycles::rdtsc() - start);
+            dt = overWriteTimes.at(i) = Cycles::toSeconds(Cycles::rdtsc() - start);
+        if (dt > DTHRES)
+            LOG(NOTICE, "Overwrite(%d) took %.3f sec", i, dt);
 
         // Allow time for asynchronous removes of index entries to complete.
         Cycles::sleep(100);
@@ -2591,6 +2598,9 @@ indexBasic()
         }
 
         // Perform Testing
+        uint64_t prev, now;
+        int numLogs = 0;
+        prev = Cycles::rdtsc();
         for (uint32_t i = 0; i < samplesPerRun; i++) {
             uint64_t start, stop;
             uint32_t intKey = randomized[generateRandom() % indexSize];
@@ -2651,10 +2661,19 @@ indexBasic()
             cluster->write(dataTable, numKeys, keyList,
                     val.getRange(0, valLen), valLen);
             stop = Cycles::rdtsc();
-            timeOverWrites.at(i) = Cycles::toSeconds(stop - start);
+            double dt;
+
+            dt = timeOverWrites.at(i) = Cycles::toSeconds(stop - start);
+            if (dt > DTHRES)
+                LOG(NOTICE, "%2d: Overwrite(%d) took %.3f sec", ++numLogs, i, dt);
 
             // Erase
+            start = Cycles::rdtsc();
             cluster->remove(dataTable, keyList[0].key, keyList[0].keyLength);
+            stop = Cycles::rdtsc();
+            dt = Cycles::toSeconds(stop - start);
+            if (dt > DTHRES)
+                LOG(NOTICE, "%2d: Erase(%d) took %.3f sec", ++numLogs, i, dt);
 
             // Allow time for asynchronous removes of index entries to complete.
             Cycles::sleep(100);
@@ -2663,9 +2682,14 @@ indexBasic()
             start = Cycles::rdtsc();
             cluster->write(dataTable, numKeys, keyList,
                     val.getRange(0, valLen), valLen);
-            timeWrites.at(i) = Cycles::toSeconds(Cycles::rdtsc() - start);
+            dt = timeWrites.at(i) = Cycles::toSeconds(Cycles::rdtsc() - start);
+            if (dt > DTHRES)
+                LOG(NOTICE, "%2d: Write(%d) took %.3f sec", ++numLogs, i, dt);
+            if (numLogs > ERRTHRES)
+                ClientException::throwException(HERE, STATUS_TIMEOUT); // Abort
         }
 
+        now = Cycles::rdtsc();
         // Print Out Results
         assert(timeWrites.size() == samplesPerRun);
         assert(timeHashLookups.size() == samplesPerRun);
@@ -2718,7 +2742,7 @@ indexBasic()
                 numberSpacing,
                 timeIndexLookups.at(ninetiethSample) *1e6);
 
-        printf("%*.2f/%*.2f/%*.2f\n",
+        printf("%*.2f/%*.2f/%*.2f - took %8.2f sec\n",
                 numberSpacing + seperatorSpacing,
                 (timeIndexLookups.at(tenthSample)-
                  timeLookupAndReads.at(tenthSample)) * 1e6,
@@ -2727,7 +2751,8 @@ indexBasic()
                  timeLookupAndReads.at(medianSample)) * 1e6,
                 numberSpacing,
                 (timeIndexLookups.at(ninetiethSample)-
-                 timeLookupAndReads.at(ninetiethSample)) *1e6);
+                 timeLookupAndReads.at(ninetiethSample)) *1e6,
+               Cycles::toSeconds(now - prev));
         fflush(stdout);
     }
 

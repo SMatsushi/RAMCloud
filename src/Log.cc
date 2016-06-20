@@ -21,6 +21,7 @@
 #include "PerfStats.h"
 #include "ServerConfig.h"
 #include "ShortMacros.h"
+#include "TimeTrace.h"
 
 namespace RAMCloud {
 
@@ -150,14 +151,18 @@ Log::getHead() {
  * in-order, so there'd be no opportunity for small writes to skip ahead of
  * large ones anyway.
  */
+extern TimeTrace traceI;
+
 void
 Log::sync()
 {
+    traceI.record(Cycles::rdtsc(),"sync start");
     CycleCounter<uint64_t> __(&PerfStats::threadStats.logSyncCycles);
 
     Tub<SpinLock::Guard> lock;
     lock.construct(appendLock);
     metrics.totalSyncCalls++;
+    traceI.record(Cycles::rdtsc(),"locked");
 
     // The only time 'head' should be NULL is after construction and before the
     // initial call to this method. Even if we run out of memory in the future,
@@ -176,6 +181,7 @@ Log::sync()
     // mistakes additional data from other threads' appends as stuff we care
     // about.
     uint32_t appendedLength = head->getAppendedLength();
+    traceI.record(Cycles::rdtsc(),"gotAppendedLength");
 
     // Concurrent appends may cause the head segment to change while we wait
     // for another thread to finish syncing, so save the segment associated
@@ -187,8 +193,10 @@ Log::sync()
     // log while we wait. Once we grab the sync lock, take the append lock again
     // to ensure our new view of the head is consistent.
     lock.destroy();
+    traceI.record(Cycles::rdtsc(),"lock destoried");
     SpinLock::Guard _(syncLock);
     lock.construct(appendLock);
+    traceI.record(Cycles::rdtsc(),"synclocked");
 
     // See if we still have work to do. It's possible that another thread
     // already did the syncing we needed for us.
@@ -201,13 +209,16 @@ Log::sync()
         // Drop the append lock. We don't want to block other appending threads
         // while we sync.
         lock.destroy();
+        traceI.record(Cycles::rdtsc(),"lock destroied");
 
         originalHead->replicatedSegment->sync(appendedLength, &certificate);
         originalHead->syncedLength = appendedLength;
+        traceI.record(Cycles::rdtsc(),"synced len=%u", appendedLength);
         TEST_LOG("log synced");
     } else {
         TEST_LOG("sync not needed: already fully replicated");
     }
+    traceI.record(Cycles::rdtsc(),"done");
 }
 
 /**

@@ -67,7 +67,8 @@ TimeTrace::~TimeTrace()
  *      Argument to use when printing a message about this event.
  */
 void TimeTrace::record(uint64_t timestamp, const char* format,
-        uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3)
+                       uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3,
+                       uint32_t arg4)
 {
     if (activeReaders > 0) {
         return;
@@ -102,6 +103,7 @@ void TimeTrace::record(uint64_t timestamp, const char* format,
     event->arg1 = arg1;
     event->arg2 = arg2;
     event->arg3 = arg3;
+    event->arg4 = arg4;
 }
 
 /**
@@ -201,14 +203,14 @@ void TimeTrace::printInternal(string* s)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-nonliteral"
             snprintf(buffer, sizeof(buffer), events[i].format, events[i].arg0,
-                     events[i].arg1, events[i].arg2, events[i].arg3);
+                     events[i].arg1, events[i].arg2, events[i].arg3, events[i].arg4);
 #pragma GCC diagnostic pop
             s->append(buffer);
         } else {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-nonliteral"
             snprintf(buffer, sizeof(buffer), events[i].format, events[i].arg0,
-                     events[i].arg1, events[i].arg2, events[i].arg3);
+                     events[i].arg1, events[i].arg2, events[i].arg3, events[i].arg4);
 #pragma GCC diagnostic pop
             RAMCLOUD_LOG(NOTICE, "%8.1f ns (+%6.1f ns): %s", ns, ns - prevTime,
                     buffer);

@@ -40,6 +40,7 @@
 #include "Tub.h"
 #include "WallTime.h"
 #include "WorkerManager.h"
+#include "Crc32C.h"
 
 namespace RAMCloud {
 
@@ -302,6 +303,9 @@ volatile int MasterService::pauseIncrement = 0;
 /// setting this variable to a value != 0.
 volatile int MasterService::continueIncrement = 0;
 #endif
+
+static    TimeTrace trace;
+TimeTrace traceI;
 
 /**
  * Top-level server method to handle the DROP_TABLET_OWNERSHIP request.
@@ -806,6 +810,7 @@ MasterService::initOnceEnlisted()
  * The RPC requesting this is typically initiated by a data master
  * that was writing the object that this index entry corresponds to.
  */
+#define DTHRESI 0.007   // 2ndary index write timeout.
 void
 MasterService::insertIndexEntry(
         const WireFormat::InsertIndexEntry::Request* reqHdr,
@@ -813,6 +818,11 @@ MasterService::insertIndexEntry(
         Rpc* rpc)
 {
     uint32_t reqOffset = sizeof32(*reqHdr);
+    uint64_t start, stop;
+    double dt;
+
+    traceI.reset();
+    traceI.record(start = Cycles::rdtsc(),"insertIndexEntry start");
     const void* indexKeyStr =
             rpc->requestPayload->getRange(reqOffset, reqHdr->indexKeyLength);
 
@@ -825,6 +835,12 @@ MasterService::insertIndexEntry(
     respHdr->common.status = indexletManager.insertEntry(
             reqHdr->tableId, reqHdr->indexId,
             indexKeyStr, reqHdr->indexKeyLength, reqHdr->primaryKeyHash);
+    traceI.record(stop = Cycles::rdtsc(),"insertIndexEntry done");
+    dt = Cycles::toSeconds(stop - start);
+    if (dt > DTHRESI) {
+        LOG(NOTICE, "idxEntry writetook %.3f sec", dt);
+        traceI.printToLog();
+    }
 }
 
 /**
@@ -1926,46 +1942,60 @@ MasterService::removeIndexEntry(
  * \param object
  *      Object for which index entries are to be inserted.
  */
+// static    uint32_t  keyCrc[256];
+static    KeyLength keyLen[256];
 void
 MasterService::requestInsertIndexEntries(Object& object)
 {
     KeyCount keyCount = object.getKeyCount();
+    trace.record(Cycles::rdtsc(),"getKeyCount");
     if (keyCount <= 1)
         return;
 
     uint64_t tableId = object.getTableId();
+    trace.record(Cycles::rdtsc(),"gotTableId=%u", (uint32_t)tableId);
     KeyLength primaryKeyLength;
     const void* primaryKey = object.getKey(0, &primaryKeyLength);
     KeyHash primaryKeyHash =
             Key(tableId, primaryKey, primaryKeyLength).getHash();
+    trace.record(Cycles::rdtsc(),"gotPrimaryKeyHash=%u",
+                 (uint32_t)primaryKeyHash);
 
     Tub<InsertIndexEntryRpc> rpcs[keyCount-1];
-
+    trace.record(Cycles::rdtsc(),"rpcs");
     // Send rpcs to all index servers involved.
     for (KeyCount keyIndex = 1; keyIndex <= keyCount - 1; keyIndex++) {
         KeyLength keyLength;
         const void* key = object.getKey(keyIndex, &keyLength);
-
+        const char* keyChar;
+        // Crc32C crc;
+        keyLen[keyIndex] = keyLength;
         if (key != NULL && keyLength > 0) {
             RAMCLOUD_LOG(DEBUG, "Inserting index entry for tableId %lu, "
                     "keyIndex %u, key %s, primaryKeyHash %lu",
                     tableId, keyIndex,
-                    string(reinterpret_cast<const char*>(key),
-                            keyLength).c_str(),
+                    keyChar = string(reinterpret_cast<const char*>(key),
+                           keyLength).c_str(),
                     primaryKeyHash);
+            
+            // crc.update(keyChar, keyLength);
+            // keyCrc[keyIndex] = crc.getResult();
 
             rpcs[keyIndex-1].construct(this, tableId, keyIndex,
                     key, keyLength, primaryKeyHash);
         }
     }
-
+    trace.record(Cycles::rdtsc(),"Sent %d keys", keyCount);
     // Wait to receive response to all rpcs.
     for (KeyCount keyIndex = 1; keyIndex <= keyCount - 1; keyIndex++) {
         if (rpcs[keyIndex-1]) {
             rpcs[keyIndex-1]->wait();
+            trace.record(Cycles::rdtsc(),"rpcs waited keyIndex %u, key len=%u",
+                         keyIndex, // keyCrc[keyIndex],
+                         keyLen[keyIndex]);
         }
     }
-}
+ }
 
 /**
  * Helper function used by remove methods in this class to send requests
@@ -3084,14 +3114,22 @@ MasterService::txPrepare(const WireFormat::TxPrepare::Request* reqHdr,
  *
  * \copydetails MasterService::read
  */
+#define DTHRES 0.01   // 2ndary index write timeout.
 void
 MasterService::write(const WireFormat::Write::Request* reqHdr,
         WireFormat::Write::Response* respHdr,
         Rpc* rpc)
 {
+    uint64_t start, stop;
+    double dt;
+
     assert(reqHdr->rpcId > 0);
+    start = Cycles::rdtsc();
+    trace.record(start,"MasterService::write starts");
+
     UnackedRpcHandle rh(&unackedRpcResults,
                         reqHdr->lease, reqHdr->rpcId, reqHdr->ackId);
+    trace.record(Cycles::rdtsc(),"UnackedRpcHandle");
     if (rh.isDuplicate()) {
         *respHdr = parseRpcResult<WireFormat::Write>(rh.resultLoc());
         rpc->sendReply();
@@ -3105,9 +3143,11 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
     // This is also used to get key information to update indexes as needed.
     Object object(reqHdr->tableId, 0, 0, *(rpc->requestPayload),
             sizeof32(*reqHdr));
+    trace.record(Cycles::rdtsc(),"Object created");
 
     // Insert new index entries, if any, before writing object.
     requestInsertIndexEntries(object);
+    trace.record(Cycles::rdtsc(),"RequestInsertIndexEntries");
 
     // Buffer for object being overwritten, so we can remove corresponding
     // index entries later.
@@ -3120,23 +3160,27 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
     uint64_t rpcResultPtr;
     KeyLength pKeyLen;
     const void* pKey = object.getKey(0, &pKeyLen);
+    trace.record(Cycles::rdtsc(),"GotKey");
     respHdr->common.status = STATUS_OK;
     RpcResult rpcResult(
             reqHdr->tableId, Key::getHash(reqHdr->tableId, pKey, pKeyLen),
             reqHdr->lease.leaseId, reqHdr->rpcId, reqHdr->ackId,
             respHdr, sizeof(*respHdr));
-
+    trace.record(Cycles::rdtsc(),"RpcResult");
     // Write the object.
     respHdr->common.status = objectManager.writeObject(
             object, &rejectRules, &respHdr->version, &oldObjectBuffer,
             &rpcResult, &rpcResultPtr);
+    trace.record(Cycles::rdtsc(),"writeObject");
 
     if (respHdr->common.status == STATUS_OK) {
         objectManager.syncChanges();
+        trace.record(Cycles::rdtsc(),"syncChanges");
         rh.recordCompletion(rpcResultPtr); // Complete only if RpcResult is
                                            // written.
                                            // Otherwise, RPC state should reset
                                            // especially for STATUS_RETRY.
+        trace.record(Cycles::rdtsc(),"recordCompletion");
     } else if (respHdr->common.status != STATUS_RETRY &&
                respHdr->common.status != STATUS_UNKNOWN_TABLET) {
         // Above status requires a client to retry. We should not write
@@ -3144,7 +3188,9 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
 
         // Write RpcResult with failed (by RejectRule) status.
         objectManager.writeRpcResultOnly(&rpcResult, &rpcResultPtr);
+        trace.record(Cycles::rdtsc(),"writeRpcResultOnly");
         rh.recordCompletion(rpcResultPtr);
+        trace.record(Cycles::rdtsc(),"recordCompletion");
     }
 
     // If this is a overwrite, delete old index entries if any (this can
@@ -3153,9 +3199,18 @@ MasterService::write(const WireFormat::Write::Request* reqHdr,
         Object oldObject(oldObjectBuffer);
         if (oldObject.getKeyCount() > 1) {
             rpc->sendReply();
+            trace.record(Cycles::rdtsc(),"sendReply");
             requestRemoveIndexEntries(oldObject);
+            trace.record(Cycles::rdtsc(),"removeIndexEntries");
         }
     }
+    stop = Cycles::rdtsc();
+    dt = Cycles::toSeconds(stop - start);
+    if (dt > DTHRES) {
+        LOG(NOTICE, "writetook %.3f sec", dt);
+        trace.printToLog();
+    }
+    trace.reset();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

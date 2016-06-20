@@ -34,6 +34,8 @@
 #include "ShortMacros.h"
 #include "TimeTrace.h"
 
+#include "Cycles.h"
+
 namespace RAMCloud {
 
 // Default RejectRules to use if none are provided by the caller: rejects
@@ -2872,6 +2874,7 @@ WriteRpc::WriteRpc(RamCloud* ramcloud, uint64_t tableId,
  *      If true, the new object will not be immediately replicated to backups.
  *      Data loss may occur!
  */
+#define DTHRES 0.01   // 2ndary index write timeout.
 WriteRpc::WriteRpc(RamCloud* ramcloud, uint64_t tableId,
         uint8_t numKeys, KeyInfo *keyList, const void* buf, uint32_t length,
         const RejectRules* rejectRules, bool async)
@@ -2883,15 +2886,27 @@ WriteRpc::WriteRpc(RamCloud* ramcloud, uint64_t tableId,
     reqHdr->tableId = tableId;
 
     uint32_t totalLength = 0;
+    uint64_t start, stop;
+    double dt;
     // invoke the Object constructor and append keysAndValue to the
     // request buffer
+    start = Cycles::rdtsc();
     Object::appendKeysAndValueToBuffer(tableId, numKeys, keyList,
                     buf, length, &request, &totalLength);
     reqHdr->rejectRules = rejectRules ? *rejectRules : defaultRejectRules;
     reqHdr->async = async;
     reqHdr->length = totalLength;
+    stop = Cycles::rdtsc();
+    dt = Cycles::toSeconds(stop - start);
+    if (dt > DTHRES)
+        LOG(NOTICE, "appendKeysAndValueToBuffer took %.3f sec", dt);
 
+    start = Cycles::rdtsc();
     fillLinearizabilityHeader<WireFormat::Write::Request>(reqHdr);
+    stop = Cycles::rdtsc();
+    dt = Cycles::toSeconds(stop - start);
+    if (dt > DTHRES)
+        LOG(NOTICE, "fillLinearizabilityHeader took %.3f sec", dt);
 
     send();
 }
@@ -2907,7 +2922,16 @@ WriteRpc::WriteRpc(RamCloud* ramcloud, uint64_t tableId,
 void
 WriteRpc::wait(uint64_t* version)
 {
+    uint64_t start, stop;
+    double dt;
+
+    start = Cycles::rdtsc();
     waitInternal(context->dispatch);
+    stop = Cycles::rdtsc();
+    dt = Cycles::toSeconds(stop - start);
+    if (dt > DTHRES)
+        LOG(NOTICE, "waitInternal took %.3f sec", dt);
+
     const WireFormat::Write::Response* respHdr(
             getResponseHeader<WireFormat::Write>());
 

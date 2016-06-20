@@ -575,10 +575,12 @@ IndexletManager::getIndexlet(uint64_t tableId, uint8_t indexId,
  *      Returns STATUS_UNKNOWN_INDEXLET if the server does not own an indexlet
  *      that could contain this index entry.
  */
+extern TimeTrace traceI;
 Status
 IndexletManager::insertEntry(uint64_t tableId, uint8_t indexId,
         const void* key, KeyLength keyLength, uint64_t pKHash)
 {
+    RAMCloud::traceI.record(Cycles::rdtsc(),"insertEntry start");
     Lock indexletMapLock(mutex);
     RAMCLOUD_LOG(DEBUG, "Inserting: tableId %lu, indexId %u, hash %lu,\n"
                         "key: %s", tableId, indexId, pKHash,
@@ -586,6 +588,7 @@ IndexletManager::insertEntry(uint64_t tableId, uint8_t indexId,
 
     IndexletMap::iterator it =
             findIndexlet(tableId, indexId, key, keyLength, indexletMapLock);
+    traceI.record(Cycles::rdtsc(),"findIndexlet");
     if (it == indexletMap.end()) {
         RAMCLOUD_LOG(DEBUG, "Unknown indexlet: tableId %lu, indexId %u, "
                             "hash %lu,\nkey: %s", tableId, indexId, pKHash,
@@ -595,10 +598,14 @@ IndexletManager::insertEntry(uint64_t tableId, uint8_t indexId,
     Indexlet* indexlet = &it->second;
 
     Lock indexletLock(indexlet->indexletMutex);
+    traceI.record(Cycles::rdtsc(),"indexletLock");
     indexletMapLock.unlock();
+    traceI.record(Cycles::rdtsc(),"indexletUnLock");
 
     BtreeEntry entry = BtreeEntry(key, keyLength, pKHash);
+    traceI.record(Cycles::rdtsc(),"btreeEntry");
     indexlet->bt->insert(entry);
+    traceI.record(Cycles::rdtsc(),"insertBtree");
 
     return STATUS_OK;
 }
