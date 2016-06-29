@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright (c) 2010-2014 Stanford University
+# Copyright (c) 2010-2016 Stanford University
 # Copyright (c) 2014-2016 NEC Corporation
 #
 # Permission to use, copy, modify, and distribute this software for any
@@ -48,17 +48,11 @@ server_locator_templates = {
     'tcp-1g': 'tcp:host=%(host1g)s,port=%(port)d',
     'basic+udp': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=25,gbs=30',
     'basic+udp-1g': 'basic+udp:host=%(host1g)s,port=%(port)d',
-    'fast+udp': 'fast+udp:host=%(host)s,port=%(port)d',
-    'fast+udp-1g': 'fast+udp:host=%(host1g)s,port=%(port)d',
     'unreliable+udp': 'unreliable+udp:host=%(host)s,port=%(port)d',
     'infrc': 'infrc:host=%(host)s,port=%(port)d',
     'basic+infud': 'basic+infud:host=%(host1g)s,rttMicros=6,gbs=30',
-    'fast+infud': 'fast+infud:host=%(host1g)s',
-    'Unreliable+infud': 'unreliable+infud:host=%(host1g)s',
-    'fast+infeth': 'fast+infeth:mac=00:11:22:33:44:%(id)02x',
+    'unreliable+infud': 'unreliable+infud:host=%(host1g)s',
     'unreliable+infeth': 'unreliable+infeth:mac=00:11:22:33:44:%(id)02x',
-#    'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0',
-    'fast+dpdk': 'fast+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0;tcp:host=%(host)s,port=%(port)d',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
@@ -69,19 +63,16 @@ coord_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
     'tcp-1g': 'tcp:host=%(host1g)s,port=%(port)d',
     'basic+udp': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=25,gbs=30',
-    'fast+udp': 'fast+udp:host=%(host)s,port=%(port)d',
     'basic+udp-1g': 'basic+udp:host=%(host1g)s,port=%(port)d',
-    'fast+udp-1g': 'fast+udp:host=%(host1g)s,port=%(port)d',
     'unreliable+udp': 'unreliable+udp:host=%(host)s,port=%(port)d',
     'infrc': 'infrc:host=%(host)s,port=%(port)d',
     # Coordinator uses udp even when rest of cluster uses infud
     # or infeth.
     'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=6,gbs=30',
-    'fast+infud': 'fast+udp:host=%(host)s,port=%(port)d',
     'unreliable+infud': 'fast+udp:host=%(host)s,port=%(port)d',
-    'fast+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
+#    'fast+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
     'unreliable+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
-    'fast+dpdk': 'tcp:host=%(host)s,port=%(port)d',
+#    'fast+dpdk': 'tcp:host=%(host)s,port=%(port)d',
 #    'basic+dpdk': 'tcp:host=%(host)s,port=%(port)d,tcpOnly=1',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
 ##     'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
@@ -92,7 +83,7 @@ coord_locator_templates = {
 def server_locator(transport, host, port=server_port):
     """Generate a service locator for a master/backup process.
 
-    @param transport: A transport name (e.g. infrc, fast+udp, tcp, ...)
+    @param transport: A transport name (e.g. infrc, basic+udp, tcp, ...)
     @type  transport: C{str}
 
     @param host: A 3-tuple of (hostname, ip, id).
@@ -116,7 +107,7 @@ def server_locator(transport, host, port=server_port):
 def coord_locator(transport, host):
     """Generate a service locator for a coordinator process.
 
-    @param transport: A transport name (e.g. infrc, fast+udp, tcp, ...)
+    @param transport: A transport name (e.g. infrc, basic+udp, tcp, ...)
     @type  transport: C{str}
 
     @param host: A 3-tuple of (hostname, ip, id).

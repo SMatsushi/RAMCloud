@@ -656,6 +656,7 @@ graph_tests = [
     Test("readDist", readDist),
     Test("readDistRandom", readDistRandom),
     Test("readDistWorkload", workloadDist),
+    Test("readInterference", default),
     Test("readLoaded", readLoaded),
     Test("readRandom", readRandom),
     Test("readThroughput", readThroughput),
@@ -670,6 +671,7 @@ graph_tests = [
     Test("writeDist", writeDist),
     Test("writeDistRandom", writeDist),
     Test("writeDistWorkload", workloadDist),
+    Test("writeInterference", default),
     Test("writeThroughput", readThroughput),
     Test("workloadThroughput", readThroughput),
 ]
