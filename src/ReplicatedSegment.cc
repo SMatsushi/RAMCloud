@@ -22,8 +22,6 @@
 
 namespace RAMCloud {
 
-extern TimeTrace traceI;
-
 uint64_t ReplicatedSegment::recoveryStart = 0;
 
 /**
@@ -386,7 +384,7 @@ ReplicatedSegment::sync(uint32_t offset, SegmentCertificate* certificate)
     Lock syncLock(syncMutex);
     Tub<Lock> lock;
     lock.construct(dataMutex);
-    traceI.record(Cycles::rdtsc(),"ReplicatedSegment locked");
+    TimeTrace::record("ReplicatedSegment locked");
 
     // Definition of synced changes if this segment isn't durably closed
     // and is recovering from a lost replica.  In that case the data
@@ -419,7 +417,7 @@ ReplicatedSegment::sync(uint32_t offset, SegmentCertificate* certificate)
         queued.bytes = appendedBytes;
         queuedCertificate = *certificate;
         schedule();
-        traceI.record(Cycles::rdtsc(),"scheduled replicas=%u",
+        TimeTrace::record("scheduled replicas=%u",
                       static_cast<uint32_t>(replicas.size()));
     }
 
@@ -447,9 +445,9 @@ ReplicatedSegment::sync(uint32_t offset, SegmentCertificate* certificate)
                     if (b > thres) {
                         step = (b * 10) / offset;
                         thres =  offset * step / 10;
-                        traceI.record("getCommitted().bytes=%u > %u (step %u of %u) %d trial",
-                                      b, thres, step, offset, trial);
-                        traceI.record("replicas[0].bytes=%d [1].bytes=%d [2].bytes=%d",
+                        TimeTrace::record("getCommitted().bytes > %u (step %u of %u) %d trial",
+                                      thres, step, offset, trial);
+                        TimeTrace::record("replicas[0].bytes=%d [1].bytes=%d [2].bytes=%d",
                                       replicas[0].isActive ? 
                                       replicas[0].committed.bytes : -1,
 
@@ -475,9 +473,9 @@ ReplicatedSegment::sync(uint32_t offset, SegmentCertificate* certificate)
         uint64_t now = Cycles::rdtsc();
         double waited = Cycles::toSeconds(now - syncStartTicks);
         if (waited > 0.007) {
- 	    traceI.record(Cycles::rdtsc(),"waited after %d trial, "
-                          "rFLOR=%u nLS=%u gCnc=%u gCbl=%u", trial,
-                          rFLOR, nLS, gCnc, gCbl);
+ 	    TimeTrace::record("waited after %d trial, "
+                          "nLS=%u gCnc=%u gCbl=%u", trial,
+                           nLS, gCnc, gCbl);
             // dumpProgress();
             syncStartTicks = now;
         }
@@ -606,7 +604,7 @@ ReplicatedSegment::performTask()
     now = Cycles::rdtsc();
     waited = Cycles::toSeconds(now - debugXXX);
     if (waited > LONGWAIT) {
-        traceI.record("performTask::After perform Free");
+        TimeTrace::record("performTask::After perform Free");
         debugXXX = now;
     }
     //-
@@ -651,7 +649,7 @@ ReplicatedSegment::performTask()
                         "replicationEpoch ok, lost open replica recovery "
                         "complete on segment %lu", segmentId);
                     
-                    traceI.record("performTask::isAtLast");
+                    TimeTrace::record("performTask::isAtLast");
                     debugXXX = now;
                 }
                 //-
@@ -674,7 +672,7 @@ ReplicatedSegment::performTask()
                     LOG(NOTICE, "Updating replicationEpoch to %lu,%lu on "
                         "coordinator to ensure lost replicas will not be reused",
                         segmentId, queued.epoch);
-                    traceI.record("performTask::updating Epoch");
+                    TimeTrace::record("performTask::updating Epoch");
                     debugXXX = now;
                 }
                 //-
@@ -703,7 +701,7 @@ ReplicatedSegment::performTask()
         now = Cycles::rdtsc();
         waited = Cycles::toSeconds(now - debugXXX);
         if (waited > LONGWAIT) {
-            traceI.record("performTask::replication Counter");
+            TimeTrace::record("performTask::replication Counter");
             debugXXX = now;
         }
         //-
