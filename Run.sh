@@ -51,23 +51,21 @@ cperfTests=(         "basic" \
 #                     "indexMultiple" \
                      "transaction_oneMaster" )
 
-# echo "tests=${cperfTests[@]}"
-
 ### For recovery test.
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
 # cmd="scripts/recovery.py -v --dry --transport=basic+dpdk"
-# cmd="scripts/recovery.py -v --timeout=700 --transport=basic+dpdk"
+cmd="mmfilter scripts/recovery.py -v --timeout=1000 --transport=basic+dpdk"
 # cmd="scripts/recovery.py -v --transport=basic+dpdk"
-# cmd="scripts/recovery.py -v --transport=fast+dpdk"
-# cmd="scripts/recovery.py --transport=fast+dpdk"
 
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
-# cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk basic"
+## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk basic"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk readDistRandom writeDistRandom readThroughput transaction_oneMaster"
+
+# echo "tests=${cperfTests[@]}"
 # cmd="mmfilter scripts/clusterperf.py --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk ${cperfTests[@]}"
-cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic"
+## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic"
 ## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=1 --servers=10 --timeout=2000 --transport=basic+dpdk indexBasic"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic indexMultiple"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk transaction_oneMaster"
@@ -75,12 +73,6 @@ cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --ti
 
 # with default timeout (250s)
 # cmd="scripts/clusterperf.py -v --transport=fast+dpdk basic"
-
-# with shorter timeout 100s because cluster.py doesnot abort with Exception
-# cmd="scripts/clusterperf.py -v --transport=fast+dpdk --timeout=50 basic"
-
-# extend timout but it crashed after long wait.
-# cmd="scripts/clusterperf.py -v --transport=fast+dpdk --timeout=1500 basic"
 
 # Use TCP instead
 # cmd="scripts/clusterperf.py -v --transport=tcp basic"
