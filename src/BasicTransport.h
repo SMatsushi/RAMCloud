@@ -592,6 +592,11 @@ class BasicTransport : public Transport {
     /// PING request.
     uint32_t pingIntervals;
 
+    /// Set to the current Cycles::rdtsc time whenever an input packet
+    /// is received or when ougoingRpcs transitions from empty to nonempty.
+    /// Used to detect suspicious gaps in input packet arrivals.
+    uint64_t gapStart;
+
     // The following variables count networking issues (indications that
     // packets have been lost or delayed).
 

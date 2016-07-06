@@ -30,7 +30,7 @@ uint32_t BasicTransport::totalNetworkIssues = 0;
 
 // Change 0 -> 1 in the following line to enable detailed time tracing in
 // this transport.
-#define TIME_TRACE 0
+#define TIME_TRACE 1
 
 /**
  * Construct a new BasicTransport.
@@ -62,8 +62,9 @@ BasicTransport::BasicTransport(Context* context, const ServiceLocator* locator,
     , grantIncrement(5*maxDataPerPacket)
     , timer(this, context->dispatch)
     , timerInterval(0)
-    , timeoutIntervals(10)
+    , timeoutIntervals(40)
     , pingIntervals(3)
+    , gapStart(0)
 {
     driver->connect(new IncomingPacketHandler(this));
 
@@ -512,6 +513,9 @@ BasicTransport::Session::sendRequest(Buffer* request, Buffer* response,
         notifier->failed();
         return;
     }
+    if (t->outgoingRpcs.empty()) {
+        t->gapStart = Cycles::rdtsc();
+    }
     ClientRpc *clientRpc = t->clientRpcPool.construct(this, request,
             response, notifier);
     RpcId id(t->clientId, t->nextSequenceNumber);
@@ -532,6 +536,17 @@ BasicTransport::Session::sendRequest(Buffer* request, Buffer* response,
 void
 BasicTransport::IncomingPacketHandler::handlePacket(Driver::Received* received)
 {
+    // Check for suspicious gaps in packet arrivals
+    uint64_t now = Cycles::rdtsc();
+    double seconds = Cycles::toSeconds(now - t->gapStart);
+    if ((seconds > 0.010)
+            && (!t->outgoingRpcs.empty() || !t->incomingRpcs.empty())) {
+        RAMCLOUD_LOG(ERROR, "Long gap with no packet arrivals (%.1f ms), "
+                "%lu incoming RPCs active, %lu outgoing RPCS active",
+                seconds*1000.0, t->incomingRpcs.size(), t->outgoingRpcs.size());
+    }
+    t->gapStart = now;
+    
     // The following method retrieves a header from a packet
     CommonHeader* common = received->getOffset<CommonHeader>(0);
     if (common == NULL) {
@@ -552,6 +567,10 @@ BasicTransport::IncomingPacketHandler::handlePacket(Driver::Received* received)
             // server since the response). Discard the packet.
             if (common->opcode == LOG_TIME_TRACE) {
                 // For LOG_TIME_TRACE requests, dump the trace anyway.
+                LOG(NOTICE, "Client received LOG_TIME_TRACE request from "
+                        "server %s for (unknown) sequence %lu",
+                        received->sender->toString().c_str(),
+                        common->rpcId.sequence);
                 TimeTrace::record(
                         "client received LOG_TIME_TRACE for sequence %u",
                         downCast<uint32_t>(common->rpcId.sequence));
@@ -699,6 +718,10 @@ BasicTransport::IncomingPacketHandler::handlePacket(Driver::Received* received)
             }
 
             case PacketOpcode::LOG_TIME_TRACE: {
+                LOG(NOTICE, "Client received LOG_TIME_TRACE request from "
+                        "server %s for sequence %lu",
+                        received->sender->toString().c_str(),
+                        common->rpcId.sequence);
                 TimeTrace::record(
                         "client received LOG_TIME_TRACE for sequence %u",
                         downCast<uint32_t>(common->rpcId.sequence));
@@ -764,7 +787,7 @@ BasicTransport::IncomingPacketHandler::handlePacket(Driver::Received* received)
                 TimeTrace::record(
                         "server received ALL_DATA, sequence %u, length %u",
                         downCast<uint32_t>(header->common.rpcId.sequence),
-                        received->len);
+                        header->messageLength);
 #endif
                 if (serverRpc != NULL) {
                     // This shouldn't normally happen: it means this packet is
@@ -936,6 +959,10 @@ BasicTransport::IncomingPacketHandler::handlePacket(Driver::Received* received)
             }
 
             case PacketOpcode::LOG_TIME_TRACE: {
+                LOG(NOTICE, "Server received LOG_TIME_TRACE request from "
+                        "client %s for sequence %lu",
+                        received->sender->toString().c_str(),
+                        common->rpcId.sequence);
                 TimeTrace::record(
                         "server received LOG_TIME_TRACE for sequence %u",
                         downCast<uint32_t>(common->rpcId.sequence));
@@ -1308,6 +1335,17 @@ BasicTransport::Timer::handleTimerEvent()
                     WireFormat::opcodeSymbol(clientRpc->request),
                     clientRpc->session->serverAddress->toString().c_str(),
                     sequence);
+#if TIME_TRACE
+                TimeTrace::record("client aborting sequence %u",
+                        downCast<uint32_t>(sequence));
+                if (clientAbortCount == 0) {
+                    TimeTrace::printToLogBackground(t->context->dispatch);
+                    LogTimeTraceHeader logHeader(RpcId(t->clientId, sequence),
+                            FROM_CLIENT);
+                    t->driver->sendPacket(clientRpc->session->serverAddress,
+                            &logHeader, NULL);
+                }
+#endif
             t->outgoingRpcs.erase(sequence);
             clientRpc->notifier->failed();
             t->clientRpcPool.destroy(clientRpc);

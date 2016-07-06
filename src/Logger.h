@@ -89,6 +89,7 @@ class Logger {
     void changeLogLevel(LogModule, int delta);
     void reset();
     void sync();
+    void waitIfCongested();
 
     void setLogLevels(LogLevel level);
     void setLogLevels(int level);
@@ -251,6 +252,12 @@ class Logger {
      * to print.
      */
     std::condition_variable_any logDataAvailable;
+
+    /**
+     * Used by waitIfCongested to wait for buffered log data to get
+     * printed.
+     */
+    std::condition_variable_any bufferSpaceFreed;
 
     /**
      * Total number of bytes available in messageBuffer.
