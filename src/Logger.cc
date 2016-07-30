@@ -83,6 +83,7 @@ Logger::Logger(LogLevel level)
     , testingBufferSize(0)
     , testingNoNotify(false)
     , testingLogTime(NULL)
+    , testingStallPrintThread(false)
 {
     setLogLevels(level);
 
@@ -762,7 +763,9 @@ Logger::printThreadMain(Logger* logger)
             // be called when the print thread is not running.
             bytesPrinted = write(fd, logger->messageBuffer + nextToPrint,
                     bytesToPrint);
-            usleep(10000);
+            while (logger->testingStallPrintThread) {
+                // Empty loop body.
+            }
         }
         if (bytesPrinted < 0) {
             fprintf(stderr, "Error writing log: %s\n", strerror(errno));
@@ -879,6 +882,7 @@ criticalErrorHandler(int signal, siginfo_t* info, void* ucontext)
     LOG(ERROR, "Backtrace:");
     for (int i = 1; i < frames; ++i)
         LOG(ERROR, "%s\n", symbols[i]);
+    Logger::get().sync();
 
     free(symbols);
 

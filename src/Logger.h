@@ -260,9 +260,10 @@ class Logger {
     std::condition_variable_any bufferSpaceFreed;
 
     /**
-     * Total number of bytes available in messageBuffer.
+     * Total number of bytes available in messageBuffer; modified only for
+     * unit testing.
      */
-    const int bufferSize;
+    int bufferSize;
 
     /**
      * Buffer space (dynamically allocated, must be freed).
@@ -319,6 +320,12 @@ class Logger {
      * for testing.
      */
     struct timespec* testingLogTime;
+
+    /**
+     * PrintThreadMain will spin internally as long as this is true, which
+     * will keep it from printing information in the buffer. Intended
+     * for unit testing. */
+    volatile bool testingStallPrintThread;
 
     DISALLOW_COPY_AND_ASSIGN(Logger);
 };

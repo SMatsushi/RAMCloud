@@ -68,7 +68,8 @@ coord_locator_templates = {
     'infrc': 'infrc:host=%(host)s,port=%(port)d',
     # Coordinator uses udp even when rest of cluster uses infud
     # or infeth.
-    'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=6,gbs=30',
+    'basic+infud': 'tcp:host=%(host)s,port=%(port)d',
+#    'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=6,gbs=30',
     'unreliable+infud': 'fast+udp:host=%(host)s,port=%(port)d',
 #    'fast+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
     'unreliable+infeth': 'fast+udp:host=%(host)s,port=%(port)d',

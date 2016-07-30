@@ -113,7 +113,8 @@ TimeTrace::printInternal(std::vector<TimeTrace::Buffer*>* buffers, string* s)
     for (uint32_t i = 0; i < buffers->size(); i++) {
         TimeTrace::Buffer* buffer = buffers->at(i);
         while ((buffer->events[current[i]].format != NULL) &&
-                (buffer->events[current[i]].timestamp < startTime)) {
+                (buffer->events[current[i]].timestamp < startTime) &&
+                (current[i] != buffer->nextIndex)) {
             current[i] = (current[i] + 1) % Buffer::BUFFER_SIZE;
         }
     }
@@ -171,7 +172,7 @@ TimeTrace::printInternal(std::vector<TimeTrace::Buffer*>* buffers, string* s)
 #pragma GCC diagnostic pop
             RAMCLOUD_LOG(NOTICE, "%8.1f ns (+%6.1f ns): %s", ns, ns - prevTime,
                     message);
-            
+
             // Make sure we're not monopolizing all of the buffer space
             // in the logger.
             eventsSinceCongestionCheck++;
@@ -280,7 +281,7 @@ TimeTrace::Buffer::Buffer()
     , events()
 {
     // Mark all of the events invalid.
-    for (int i = 0; i < BUFFER_SIZE; i++) {
+    for (uint32_t i = 0; i < BUFFER_SIZE; i++) {
         events[i].format = NULL;
     }
 }
@@ -324,7 +325,7 @@ void TimeTrace::Buffer::record(uint64_t timestamp, const char* format,
     }
 
     Event* event = &events[nextIndex];
-    nextIndex = (nextIndex + 1) % BUFFER_SIZE;
+    nextIndex = (nextIndex + 1) & BUFFER_MASK;
 
     // There used to be code here for prefetching the next few events,
     // in order to minimize cache misses on the array of events. However,
@@ -367,7 +368,7 @@ void TimeTrace::Buffer::printToLog()
  */
 void TimeTrace::Buffer::reset()
 {
-    for (int i = 0; i < BUFFER_SIZE; i++) {
+    for (uint32_t i = 0; i < BUFFER_SIZE; i++) {
         if (events[i].format == NULL) {
             break;
         }

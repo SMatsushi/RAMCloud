@@ -33,6 +33,7 @@
 #include "Buffer.h"
 #include "Object.h"
 #include "ObjectManager.h"
+#include "PerfStats.h"
 #include "TimeTrace.h"
 
 namespace RAMCloud {
@@ -2205,6 +2206,8 @@ PRIVATE:
                      nodeId, ptr->serializedLength());
 
         ptr->reinitFromRead(outBuffer, sizeBeforeRead);
+        PerfStats::threadStats.btreeNodeReads++;
+        PerfStats::threadStats.btreeBytesRead += (ptr->serializedLength());
         return ptr;
     }
 
@@ -2289,6 +2292,9 @@ PRIVATE:
           numEntries+= 2;
       else
           numEntries++;
+
+      PerfStats::threadStats.btreeNodeWrites++;
+      PerfStats::threadStats.btreeBytesWritten += node->serializedLength();
 
       assert(status == STATUS_OK);
       return nodeId;
@@ -2608,8 +2614,7 @@ PRIVATE:
                                     newRightSibling,
                                     updateInfo->newChildId,
                                     updateInfo->getRightSiblingId());
-
-
+        PerfStats::threadStats.btreeNodeSplits++;
 
         // If the root is split, rewrite the current root using a
         // new NodeId so that the new root can have NodeId = m_rootId
@@ -2644,6 +2649,7 @@ PRIVATE:
         LeafNode *newRightSibling = buffer.emplaceAppend<LeafNode>(&buffer);
         m_stats.leaves++;
         leaf->split(midpoint, newRightSibling);
+        PerfStats::threadStats.btreeNodeSplits++;
 
         if (insertIndex < leaf->slotuse) {
            leaf->insertAt(insertIndex, entry);
@@ -2974,6 +2980,8 @@ PRIVATE:
     inline BtreeEntry
     balance(Node *left, Node *right, BtreeEntry leftParentEntry)
     {
+        PerfStats::threadStats.btreeRebalances++;
+
         if (left->isinnernode()) {
             InnerNode *leftIn = static_cast<InnerNode*>(left);
             InnerNode *rightIn = static_cast<InnerNode*>(right);
@@ -3006,6 +3014,7 @@ PRIVATE:
     inline void
     merge(Node *left, Node *right, BtreeEntry leftParentEntry)
     {
+        PerfStats::threadStats.btreeNodeCoalesces++;
 
         // If these are leaf nodes, we need to adjust pointers
         if (left->isLeaf()) {

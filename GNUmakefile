@@ -93,6 +93,7 @@ endif
 ifeq ($(ZOOKEEPER),yes)
 COMFLAGS += -DENABLE_ZOOKEEPER
 endif
+TEST_INSTALL_FLAGS =
 
 COMWARNS := -Wall -Wformat=2 -Wextra \
             -Wwrite-strings -Wno-unused-parameter -Wmissing-format-attribute
@@ -170,6 +171,9 @@ endif
 # a DPDK driver for FastTransport. Note: DPDK must be present at "./dpdk"
 # (either directly or via a symbolic link). If you run the script
 # scripts/dpdkBuild.sh, it will install DPDK in an appropriate way.
+# RAMCloud currently assumes DPDK 1.8; build it with
+# "make install T=x86_64-native-linuxapp-gcc" (set CONFIG_RTE_BUILD_COMBINE_LIBS
+# and CONFIG_RTE_BUILD_SHARED_LIB to y in the .config file)
 DPDK ?= no
 # DPDK
 ifeq ($(DPDK),yes)
@@ -248,6 +252,16 @@ endif
 COMFLAGS += -DTENTATIVE_TUNE
 
 # end of DPDK
+# =======
+#DPDK_INSTALL_DIR = dpdk/x86_64-native-linuxapp-gcc
+#INCLUDES += -I$(DPDK_INSTALL_DIR)/include
+#LIBS += $(DPDK_INSTALL_DIR)/lib/libintel_dpdk.so -ldl
+#TEST_INSTALL_FLAGS += $(DPDK_INSTALL_DIR)/lib/libintel_dpdk.so -ldl
+# Note: __STDC_LIMIT_MACROS definition below is needed to avoid
+# compilation errors in DPDK header files.
+# COMFLAGS += -DDPDK -Dtypeof=__typeof__
+# Needed as of DPDK 1.8; remove if later versions fix the problem.
+# CXXWARNS := $(CXXWARNS) -Wno-literal-suffix
 endif
 
 ifeq ($(YIELD),yes)
