@@ -13,7 +13,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include "RamCloud.h"
 #include "RpcWrapper.h"
 
 #ifndef RAMCLOUD_INDEXRPCWRAPPER_H
@@ -22,9 +21,7 @@
 namespace RAMCloud {
 
 // Forward declarations
-class Context;
 class ObjectFinder;
-class RamCloud;
 class MasterService;
 
 /**

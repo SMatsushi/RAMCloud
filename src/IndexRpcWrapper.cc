@@ -14,9 +14,8 @@
  */
 
 #include "IndexRpcWrapper.h"
-#include "Logger.h"
 #include "MasterService.h"
-#include "ShortMacros.h"
+#include "RamCloud.h"
 
 namespace RAMCloud {
 
@@ -54,7 +53,7 @@ IndexRpcWrapper::IndexRpcWrapper(
             uint32_t responseHeaderLength, Buffer* responseBuffer)
     : RpcWrapper(responseHeaderLength, responseBuffer)
     , context(ramcloud->clientContext)
-    , objectFinder(ramcloud->clientContext->objectFinder)
+    , objectFinder(context->objectFinder)
     , tableId(tableId)
     , indexId(indexId)
     , key(key)

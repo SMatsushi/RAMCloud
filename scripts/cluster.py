@@ -68,17 +68,15 @@ coord_locator_templates = {
     'infrc': 'infrc:host=%(host)s,port=%(port)d',
     # Coordinator uses udp even when rest of cluster uses infud
     # or infeth.
-    'basic+infud': 'tcp:host=%(host)s,port=%(port)d',
-#    'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=6,gbs=30',
     'unreliable+infud': 'fast+udp:host=%(host)s,port=%(port)d',
-#    'fast+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
     'unreliable+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
-#    'fast+dpdk': 'tcp:host=%(host)s,port=%(port)d',
-#    'basic+dpdk': 'tcp:host=%(host)s,port=%(port)d,tcpOnly=1',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
 ##     'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
      'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=8,gbs=2',
 #     'basic+dpdk': 'basic+udp:host=%(host)s,port=%(port)d,tcpOnly=1,rttMicros=6,gbs=30',
+#    'basic+infud': 'tcp:host=%(host)s,port=%(port)d',
+#    'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=6,gbs=30',
+    'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d',
 }
 
 def server_locator(transport, host, port=server_port):

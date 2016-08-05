@@ -34,7 +34,8 @@
 // Maximum number of packet buffers that the memory pool can hold
 #define NB_MBUF 8192
 // per-element size for the packet buffer memory pool
-#define MBUF_SIZE (2048 + static_cast<uint32_t>(sizeof(struct rte_mbuf)) + RTE_PKTMBUF_HEADROOM)
+#define MBUF_SIZE (2048 + static_cast<uint32_t>(sizeof(struct rte_mbuf)) \
+                   + RTE_PKTMBUF_HEADROOM)
 
 // Forward declarations, so we don't have to include DPDK headers here.
 struct rte_mempool;

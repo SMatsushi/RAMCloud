@@ -72,7 +72,7 @@ DpdkDriver::DpdkDriver(Context* context,
     , portId(0)
     , packetPool(NULL)
     , loopbackRing(NULL)
-    , hasHardwareFilter(true)             // Cleared if not applicable at NIC initialization
+    , hasHardwareFilter(true) // Cleared if not applicable at NIC initialization
     , bandwidthGbps(10)                   // Default bandwidth = 10 gbs
     , queueEstimator(0)
     , maxTransmitQueueSize(0)
@@ -127,7 +127,7 @@ DpdkDriver::DpdkDriver(Context* context,
     // create an memory pool for accommodating packet buffers
     packetPool = rte_mempool_create("mbuf_pool", NB_MBUF,
                                       MBUF_SIZE, 32,
-                                      static_cast<uint32_t>(sizeof(struct rte_pktmbuf_pool_private)),
+              static_cast<uint32_t>(sizeof(struct rte_pktmbuf_pool_private)),
                                       rte_pktmbuf_pool_init, NULL,
                                       rte_pktmbuf_init, NULL,
                                       rte_socket_id(), 0);
@@ -267,7 +267,8 @@ DpdkDriver::~DpdkDriver()
 uint32_t
 DpdkDriver::getMaxPacketSize()
 {
-    return MAX_PAYLOAD_SIZE - static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader));
+    return MAX_PAYLOAD_SIZE
+            - static_cast<uint32_t>(sizeof(NetUtil::EthernetHeader));
 }
 
 // See docs in Driver class.
@@ -308,7 +309,7 @@ DpdkDriver::receivePackets(int maxPackets,
         struct rte_mbuf* m = mPkts[i];
         rte_prefetch0(rte_pktmbuf_mtod(m, void *));
         PacketBuf* buffer = packetBufPool.construct();
-        
+
         if (hasHardwareFilter) {
             // Perform packet filtering by software to skip unrelevant
             //  packets such as ipmi or kernel TCP/IP traffics.
@@ -316,7 +317,8 @@ DpdkDriver::receivePackets(int maxPackets,
             char *data = rte_pktmbuf_mtod(m, char *);
             auto& eth_header = *reinterpret_cast<EthernetHeader*>(data);
             if (eth_header.etherType != HTONS(NetUtil::EthPayloadType::FAST)) {
-                LOG(DEBUG, "unknown ether type: %x\n", NTOHS(eth_header.etherType));
+                LOG(DEBUG, "unknown ether type: %x\n",
+                    NTOHS(eth_header.etherType));
                 packetBufPool.destroy(buffer);
                 rte_pktmbuf_free(m);
                 continue;

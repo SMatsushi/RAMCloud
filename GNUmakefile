@@ -177,17 +177,25 @@ endif
 DPDK ?= no
 # DPDK
 ifeq ($(DPDK),yes)
-## conflict at master and huawei-dpdk rebaase
+#
+## Previous master for huawei-dpdk : Modified for comilation with
+#     wider versions of dpdk.
 # 
 # INCLUDES += -Idpdk/build/include
 ## Note: --whole-archive is necessary to make sure that all of the facilities
 ## of the library are available for dynamic linking later.
 # LIBS += -Wl,--whole-archive dpdk/build/lib/libintel_dpdk.a -Wl,--no-whole-archive -ldl
+# 
+# DPDK_INSTALL_DIR = dpdk/x86_64-native-linuxapp-gcc
+# INCLUDES += -I$(DPDK_INSTALL_DIR)/include
+# LIBS += $(DPDK_INSTALL_DIR)/lib/libintel_dpdk.so -ldl
+# TEST_INSTALL_FLAGS += $(DPDK_INSTALL_DIR)/lib/libintel_dpdk.so -ldl
 ## Note: __STDC_LIMIT_MACROS definition below is needed to avoid
 ## compilation errors in DPDK header files.
 # COMFLAGS += -DDPDK -Dtypeof=__typeof__
 ## Needed as of DPDK 1.8; remove if later versions fix the problem.
 # CXXWARNS := $(CXXWARNS) -Wno-literal-suffix
+#
 RTE_TARGET  ?= x86_64-native-linuxapp-gcc
 COMFLAGS    += -DDPDK -Dtypeof=__typeof__
 
@@ -253,15 +261,6 @@ COMFLAGS += -DTENTATIVE_TUNE
 
 # end of DPDK
 # =======
-#DPDK_INSTALL_DIR = dpdk/x86_64-native-linuxapp-gcc
-#INCLUDES += -I$(DPDK_INSTALL_DIR)/include
-#LIBS += $(DPDK_INSTALL_DIR)/lib/libintel_dpdk.so -ldl
-#TEST_INSTALL_FLAGS += $(DPDK_INSTALL_DIR)/lib/libintel_dpdk.so -ldl
-# Note: __STDC_LIMIT_MACROS definition below is needed to avoid
-# compilation errors in DPDK header files.
-# COMFLAGS += -DDPDK -Dtypeof=__typeof__
-# Needed as of DPDK 1.8; remove if later versions fix the problem.
-# CXXWARNS := $(CXXWARNS) -Wno-literal-suffix
 endif
 
 ifeq ($(YIELD),yes)
