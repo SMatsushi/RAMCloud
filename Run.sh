@@ -22,7 +22,8 @@ then
     echo $cmd
     $cmd
 fi
-cmd="make -j8 DEBUG=no DPDK=yes"
+# cmd="make -j8 DEBUG=no DPDK=yes"
+cmd="make -j8 ARCH=atom DEBUG=no DPDK=yes"
 echo $cmd
 if [ "$flag_c" = "TRUE" ]; then
     $cmd
@@ -64,9 +65,9 @@ cmd="mmfilter scripts/recovery.py -v --timeout=1000 --transport=basic+dpdk"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk readDistRandom writeDistRandom readThroughput transaction_oneMaster"
 
 # echo "tests=${cperfTests[@]}"
-# cmd="mmfilter scripts/clusterperf.py --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk ${cperfTests[@]}"
+## cmd="mmfilter scripts/clusterperf.py --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk ${cperfTests[@]}"
 ## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic"
-## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=1 --servers=10 --timeout=2000 --transport=basic+dpdk indexBasic"
+# cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=1 --servers=10 --timeout=2000 --transport=basic+dpdk indexBasic"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk indexBasic indexMultiple"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=1000 --transport=basic+dpdk transaction_oneMaster"
 # cmd="scripts/clusterperf.py -v --transport=basic+dpdk basic"
