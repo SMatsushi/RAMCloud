@@ -46,11 +46,12 @@ valgrind_command = ''
 server_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
     'tcp-1g': 'tcp:host=%(host1g)s,port=%(port)d',
-    'basic+udp': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=25,gbs=30',
+    'basic+udp': 'basic+udp:host=%(host)s,port=%(port)d',
+#    'basic+udp': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=25,gbs=30',
     'basic+udp-1g': 'basic+udp:host=%(host1g)s,port=%(port)d',
     'unreliable+udp': 'unreliable+udp:host=%(host)s,port=%(port)d',
     'infrc': 'infrc:host=%(host)s,port=%(port)d',
-    'basic+infud': 'basic+infud:host=%(host1g)s,rttMicros=6,gbs=30',
+    'basic+infud': 'basic+infud:host=%(host1g)s',
     'unreliable+infud': 'unreliable+infud:host=%(host1g)s',
     'unreliable+infeth': 'unreliable+infeth:mac=00:11:22:33:44:%(id)02x',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0',
@@ -62,7 +63,7 @@ server_locator_templates = {
 coord_locator_templates = {
     'tcp': 'tcp:host=%(host)s,port=%(port)d',
     'tcp-1g': 'tcp:host=%(host1g)s,port=%(port)d',
-    'basic+udp': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=25,gbs=30',
+    'basic+udp': 'basic+udp:host=%(host)s,port=%(port)d',
     'basic+udp-1g': 'basic+udp:host=%(host1g)s,port=%(port)d',
     'unreliable+udp': 'unreliable+udp:host=%(host)s,port=%(port)d',
     'infrc': 'infrc:host=%(host)s,port=%(port)d',
@@ -72,11 +73,13 @@ coord_locator_templates = {
     'unreliable+infeth': 'fast+udp:host=%(host)s,port=%(port)d',
 #    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=10,gbs=2;tcp:host=%(host)s,port=%(port)d',
 ##     'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=50,gbs=2',
+#    'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0',
      'basic+dpdk': 'basic+dpdk:mac=%(mac)s,devport=0,rttMicros=8,gbs=2',
 #     'basic+dpdk': 'basic+udp:host=%(host)s,port=%(port)d,tcpOnly=1,rttMicros=6,gbs=30',
 #    'basic+infud': 'tcp:host=%(host)s,port=%(port)d',
 #    'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d,rttMicros=6,gbs=30',
     'basic+infud': 'basic+udp:host=%(host)s,port=%(port)d',
+#    'basic+dpdk': 'basic+udp:host=%(host)s,port=%(port)d',
 }
 
 def server_locator(transport, host, port=server_port):
