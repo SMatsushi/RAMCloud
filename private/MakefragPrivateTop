@@ -1,0 +1,9 @@
+#
+# Local Makefrag for NEC ATOM server to compile with DPDK.
+# Copyright (c) 2016 NEC Corporation
+#
+
+DPDK = yes
+ARCH = atom
+DPDK_DIR ?= /usr
+DPDK_TARGET = 
