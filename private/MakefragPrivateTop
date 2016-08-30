@@ -3,7 +3,7 @@
 # Copyright (c) 2016 NEC Corporation
 #
 
-DPDK = yes
-ARCH = atom
+DPDK ?= yes
+ARCH ?= atom
 DPDK_DIR ?= /usr
-DPDK_TARGET = 
+DPDK_TARGET ?= 
