@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015 Stanford University
+/* Copyright (c) 2011-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -17,10 +17,10 @@
 #include <fcntl.h>
 
 #include "Common.h"
+#include "AdminClient.h"
 #include "CycleCounter.h"
 #include "Cycles.h"
 #include "Fence.h"
-#include "PingClient.h"
 #include "CoordinatorClient.h"
 #include "FailureDetector.h"
 #include "IpAddress.h"
@@ -32,7 +32,7 @@ namespace RAMCloud {
 
 /**
  * Create a new FailureDetector object. Note that this class depends on the
- * MembershipService running and keeping the global Context::serverList up
+ * AdminService running and keeping the global Context::serverList up
  * to date. Without it, we'd not know of new servers to ping.
  *
  * \param context
@@ -146,7 +146,7 @@ void
 FailureDetector::pingRandomServer()
 {
     ServerId pingee = serverTracker.getRandomServerIdWithService(
-        WireFormat::PING_SERVICE);
+        WireFormat::ADMIN_SERVICE);
     if (!pingee.isValid() || pingee == ourServerId) {
         // If there isn't anyone to talk to, or the host selected
         // is ourself, then just skip this round and try again

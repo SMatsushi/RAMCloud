@@ -115,7 +115,7 @@ class MasterServiceTest : public ::testing::Test {
 
         backup1Config.localLocator = "mock:host=backup1";
         backup1Config.services = {WireFormat::BACKUP_SERVICE,
-                WireFormat::MEMBERSHIP_SERVICE};
+                WireFormat::ADMIN_SERVICE};
         backup1Config.segmentSize = segmentSize;
         backup1Config.backup.numSegmentFrames = 30;
         Server* server = cluster.addServer(backup1Config);
@@ -127,7 +127,7 @@ class MasterServiceTest : public ::testing::Test {
         masterConfig.maxObjectDataSize = segmentSize / 4;
         masterConfig.localLocator = "mock:host=master";
         masterConfig.services = {WireFormat::MASTER_SERVICE,
-                WireFormat::MEMBERSHIP_SERVICE};
+                WireFormat::ADMIN_SERVICE};
         masterConfig.master.logBytes = segmentSize * 30;
         masterConfig.master.numReplicas = 1;
         masterServer = cluster.addServer(masterConfig);
@@ -1389,13 +1389,13 @@ TEST_F(MasterServiceTest, multiIncrement_malformedRequests) {
 
     Buffer requestPayload;
     Buffer replyPayload;
-    requestPayload.appendExternal(&reqHdr, sizeof(reqHdr));
-    replyPayload.appendExternal(&respHdr, sizeof(respHdr));
+    requestPayload.appendExternal(&reqHdr, sizeof32(reqHdr));
+    replyPayload.appendExternal(&respHdr, sizeof32(respHdr));
 
     Service::Rpc rpc(NULL, &requestPayload, &replyPayload);
 
     // Part field is bogus.
-    requestPayload.appendExternal(&part, sizeof(part) - 1);
+    requestPayload.appendExternal(&part, sizeof32(part) - 1);
     respHdr.common.status = STATUS_OK;
     service->multiIncrement(&reqHdr, &respHdr, &rpc);
     EXPECT_EQ(STATUS_REQUEST_FORMAT_ERROR, respHdr.common.status);
@@ -1575,20 +1575,20 @@ TEST_F(MasterServiceTest, multiRemove_malformedRequests) {
 
     Buffer requestPayload;
     Buffer replyPayload;
-    requestPayload.appendExternal(&reqHdr, sizeof(reqHdr));
-    replyPayload.appendExternal(&respHdr, sizeof(respHdr));
+    requestPayload.appendExternal(&reqHdr, sizeof32(reqHdr));
+    replyPayload.appendExternal(&respHdr, sizeof32(respHdr));
 
     Service::Rpc rpc(NULL, &requestPayload, &replyPayload);
 
     // Part field is bogus.
-    requestPayload.appendExternal(&part, sizeof(part) - 1);
+    requestPayload.appendExternal(&part, sizeof32(part) - 1);
     respHdr.common.status = STATUS_OK;
     service->multiRemove(&reqHdr, &respHdr, &rpc);
     EXPECT_EQ(STATUS_REQUEST_FORMAT_ERROR, respHdr.common.status);
 
     // Key is missing.
     requestPayload.truncate(requestPayload.size() - (sizeof32(part) - 1));
-    requestPayload.appendExternal(&part, sizeof(part));
+    requestPayload.appendExternal(&part, sizeof32(part));
     respHdr.common.status = STATUS_OK;
     service->multiRemove(&reqHdr, &respHdr, &rpc);
     EXPECT_EQ(STATUS_REQUEST_FORMAT_ERROR, respHdr.common.status);
@@ -1719,19 +1719,19 @@ TEST_F(MasterServiceTest, multiWrite_malformedRequests) {
 
     Buffer requestPayload;
     Buffer replyPayload;
-    requestPayload.appendExternal(&reqHdr, sizeof(reqHdr));
-    replyPayload.appendExternal(&respHdr, sizeof(respHdr));
+    requestPayload.appendExternal(&reqHdr, sizeof32(reqHdr));
+    replyPayload.appendExternal(&respHdr, sizeof32(respHdr));
 
     Service::Rpc rpc(NULL, &requestPayload, &replyPayload);
 
     // part field is bogus
-    requestPayload.appendExternal(&part, sizeof(part) - 1);
+    requestPayload.appendExternal(&part, sizeof32(part) - 1);
     respHdr.common.status = STATUS_OK;
     service->multiWrite(&reqHdr, &respHdr, &rpc);
     EXPECT_EQ(STATUS_REQUEST_FORMAT_ERROR, respHdr.common.status);
 
     requestPayload.truncate(requestPayload.size() - (sizeof32(part) - 1));
-    requestPayload.appendExternal(&part, sizeof(part));
+    requestPayload.appendExternal(&part, sizeof32(part));
 
     // Malformed requests with both the key and the value length fields
     // as bogus and requests with only the value length field bogus will
@@ -4645,7 +4645,7 @@ class MasterRecoverTest : public ::testing::Test {
         ServerConfig config = ServerConfig::forTesting();
         config.localLocator = "mock:host=backup1";
         config.services = {WireFormat::BACKUP_SERVICE,
-                WireFormat::MEMBERSHIP_SERVICE};
+                WireFormat::ADMIN_SERVICE};
         config.segmentSize = segmentSize;
         config.backup.numSegmentFrames = segmentFrames;
         Server* server = cluster.addServer(config);
@@ -4666,7 +4666,7 @@ class MasterRecoverTest : public ::testing::Test {
         ServerConfig config = ServerConfig::forTesting();
         config.localLocator = "mock:host=master";
         config.services = {WireFormat::MASTER_SERVICE,
-                WireFormat::MEMBERSHIP_SERVICE};
+                WireFormat::ADMIN_SERVICE};
         config.master.numReplicas = 2;
         return cluster.addServer(config)->master.get();
     }
@@ -4707,7 +4707,7 @@ TEST_F(MasterRecoverTest, recover) {
     ServerList serverList2(&context2);
     context2.transportManager->registerMock(&cluster.transport);
     serverList2.testingAdd({backup1Id, "mock:host=backup1",
-            {WireFormat::BACKUP_SERVICE, WireFormat::MEMBERSHIP_SERVICE},
+            {WireFormat::BACKUP_SERVICE, WireFormat::ADMIN_SERVICE},
             100, ServerStatus::UP});
     ServerId serverId(99, 0);
     ReplicaManager mgr(&context2, &serverId, 1, false, false);
