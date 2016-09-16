@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015 Stanford University
+/* Copyright (c) 2011-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -13,31 +13,38 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#ifndef RAMCLOUD_PINGSERVICE_H
-#define RAMCLOUD_PINGSERVICE_H
+#ifndef RAMCLOUD_ADMINSERVICE_H
+#define RAMCLOUD_ADMINSERVICE_H
 
 #include "Service.h"
+#include "ServerConfig.h"
 #include "ServerList.h"
 
 namespace RAMCloud {
 
 /**
- * This Service is used only for ping requests.  Placing these requests in a
- * separate service allows them to have their own threads so that ping-related
- * requests don't block, even if other parts of the server are overloaded.
+ * This Service supports a variety of requests used for cluster management,
+ * such as pings, server controls, and server list management.
  */
-class PingService : public Service {
+class AdminService : public Service {
   public:
-    explicit PingService(Context* context);
-    ~PingService();
+    explicit AdminService(Context* context, ServerList* serverList,
+            const ServerConfig* serverConfig);
+    ~AdminService();
     void dispatch(WireFormat::Opcode opcode, Rpc* rpc);
 
   PRIVATE:
     void getMetrics(const WireFormat::GetMetrics::Request* reqHdr,
             WireFormat::GetMetrics::Response* respHdr,
             Rpc* rpc);
+    void getServerConfig(const WireFormat::GetServerConfig::Request* reqHdr,
+                         WireFormat::GetServerConfig::Response* respHdr,
+                         Rpc* rpc);
     void getServerId(const WireFormat::GetServerId::Request* reqHdr,
             WireFormat::GetServerId::Response* respHdr,
+            Rpc* rpc);
+    void kill(const WireFormat::Kill::Request* reqHdr,
+            WireFormat::Kill::Response* respHdr,
             Rpc* rpc);
     void ping(const WireFormat::Ping::Request* reqHdr,
             WireFormat::Ping::Response* respHdr,
@@ -48,12 +55,20 @@ class PingService : public Service {
     void serverControl(const WireFormat::ServerControl::Request* reqHdr,
             WireFormat::ServerControl::Response* respHdr,
             Rpc* rpc);
-    void kill(const WireFormat::Kill::Request* reqHdr,
-            WireFormat::Kill::Response* respHdr,
-            Rpc* rpc);
+    void updateServerList(const WireFormat::UpdateServerList::Request* reqHdr,
+                       WireFormat::UpdateServerList::Response* respHdr,
+                       Rpc* rpc);
 
     /// Shared RAMCloud information.
     Context* context;
+
+    /// ServerList to update in response to Coordinator's RPCs. NULL means
+    /// that we will reject requests to update our server list.
+    ServerList* serverList;
+
+    /// This server's ServerConfig, which we export to curious parties.
+    /// NULL means we'll reject curious parties.
+    const ServerConfig* serverConfig;
 
     /// If this variable is true, the kill method returns without dying.
     /// This is used during unit tests that verify the communication path
@@ -65,10 +80,10 @@ class PingService : public Service {
     /// false.
     bool returnUnknownId;
 
-    DISALLOW_COPY_AND_ASSIGN(PingService);
+    DISALLOW_COPY_AND_ASSIGN(AdminService);
 };
 
 
 } // end RAMCloud
 
-#endif  // RAMCLOUD_PINGSERVICE_H
+#endif  // RAMCLOUD_ADMINSERVICE_H

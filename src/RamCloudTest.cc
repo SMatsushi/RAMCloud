@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2015 Stanford University
+/* Copyright (c) 2011-2016 Stanford University
  *
  * Permission to use, copy, modify, and distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -46,16 +46,16 @@ class RamCloudTest : public ::testing::Test {
 
         ServerConfig config = ServerConfig::forTesting();
         config.services = {WireFormat::MASTER_SERVICE,
-                           WireFormat::PING_SERVICE};
+                           WireFormat::ADMIN_SERVICE};
         config.localLocator = "mock:host=master1";
         cluster.addServer(config);
         config.services = {WireFormat::MASTER_SERVICE,
                            WireFormat::BACKUP_SERVICE,
-                           WireFormat::PING_SERVICE};
+                           WireFormat::ADMIN_SERVICE};
         config.localLocator = "mock:host=master2";
         cluster.addServer(config);
-        config.services = {WireFormat::PING_SERVICE};
-        config.localLocator = "mock:host=ping1";
+        config.services = {WireFormat::ADMIN_SERVICE};
+        config.localLocator = "mock:host=admin1";
         cluster.addServer(config);
 
         ramcloud.construct(&context, "mock:host=coordinator");
@@ -416,7 +416,7 @@ TEST_F(RamCloudTest, incrementDouble) {
     EXPECT_EQ(2U, version);
     EXPECT_DOUBLE_EQ(2.14, ramcloud->incrementDouble(tableId1,
             "key1", 4, -2.0));
-    ramcloud->write(tableId1, "key2", 4, &value, sizeof(value)-1);
+    ramcloud->write(tableId1, "key2", 4, &value, sizeof32(value)-1);
     EXPECT_THROW(ramcloud->incrementDouble(tableId1, "key21", 4, 0.0),
                  InvalidObjectException);
 }
@@ -429,7 +429,7 @@ TEST_F(RamCloudTest, incrementInt64) {
             NULL, &version));
     EXPECT_EQ(2U, version);
     EXPECT_EQ(111L, ramcloud->incrementInt64(tableId1, "key1", 4, -3L));
-    ramcloud->write(tableId1, "key2", 4, &value, sizeof(int64_t)-1);
+    ramcloud->write(tableId1, "key2", 4, &value, sizeof32(int64_t)-1);
     EXPECT_THROW(ramcloud->incrementInt64(tableId1, "key21", 4, 1);,
                  InvalidObjectException);
 }
@@ -615,7 +615,7 @@ TEST_F(RamCloudTest, getRuntimeOption) {
 
 TEST_F(RamCloudTest, testingKill) {
     TestLog::reset();
-    cluster.servers[0]->ping->ignoreKill = true;
+    cluster.servers[0]->adminService->ignoreKill = true;
     // Create the RPC object directly rather than calling testingKill
     // (testingKill would hang in objectFinder->waitForTabletDown).
     KillRpc rpc(ramcloud.get(), tableId1, "0", 1);

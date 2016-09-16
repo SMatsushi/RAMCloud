@@ -207,6 +207,7 @@ ifeq ($(DPDK_SHARED),no)
 $(error DPDK_SHARED should be yes when DPDK is installed on the system)
 endif
 DPDK_SHARED := yes
+DPDK_LIB_DIR ?= /usr/lib64
 else
 # Link with the libraries in the DPDK SDK under DPDK_DIR
 ifeq ($(wildcard $(DPDK_DIR)),)
@@ -215,7 +216,7 @@ endif
 ifeq ($(wildcard $(DPDK_DIR)/$(DPDK_TARGET)),)
 $(error $(DPDK_DIR)/$(DPDK_TARGET) not found. Have you built DPDK?)
 endif
-COMFLAGS   += -I$(DPDK_DIR)/$(DPDK_TARGET)/include
+COMFLAGS   += -I$(DPDK_DIR)/$(DPDK_TARGET)/include/dpdk
 DPDK_LIB_DIR := $(DPDK_DIR)/$(DPDK_TARGET)/lib64
 LIBS       += -L$(DPDK_LIB_DIR)
 DPDK_RPATH := -Wl,-rpath,$(abspath $(DPDK_LIB_DIR))

@@ -23,7 +23,8 @@ then
     $cmd
 fi
 # cmd="make -j8 DEBUG=no DPDK=yes"
-cmd="make -j8 ARCH=atom DEBUG=no DPDK=yes"
+# cmd="make -j8 ARCH=atom DEBUG=no DPDK=yes"
+cmd="make -j8 DEBUG=no"
 echo $cmd
 if [ "$flag_c" = "TRUE" ]; then
     $cmd
@@ -56,12 +57,13 @@ cperfTests=(         "basic" \
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
 # cmd="scripts/recovery.py -v --dry --transport=basic+dpdk"
-cmd="mmfilter scripts/recovery.py -v --timeout=1000 --transport=basic+dpdk"
+## cmd="mmfilter scripts/recovery.py -v --timeout=1000 --transport=basic+dpdk"
 # cmd="scripts/recovery.py -v --transport=basic+dpdk"
 
 # use Dpdk among client and servers, tcp to/from coordinator
 # with default timeout (250s)
-## cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk basic"
+cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk basic"
+## cmd="mmfilter scripts/clusterperf.py -v --timeout=500 --disjunct --transport=basic+dpdk basic"
 # cmd="mmfilter scripts/clusterperf.py -v --disjunct --clients=6 --servers=10 --timeout=500 --transport=basic+dpdk readDistRandom writeDistRandom readThroughput transaction_oneMaster"
 
 # echo "tests=${cperfTests[@]}"
