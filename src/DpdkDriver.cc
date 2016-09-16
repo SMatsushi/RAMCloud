@@ -242,10 +242,8 @@ DpdkDriver::DpdkDriver(Context* context,
     // essentially kills performance, as every thread is contenting for a
     // single core. Revert this, by restoring the affinity to the default
     // (all cores).
-#if defined(WA_FOR_NDEBUG)
     Util::clearCpuAffinity();
     LOG(NOTICE, "Util:clearCpuAffinity");
-#endif
 }
 
 /**
